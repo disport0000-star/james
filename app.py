@@ -7,17 +7,17 @@ import concurrent.futures
 import time
 
 # --- 1. 網頁基本設定 ---
-st.set_page_config(page_title="高殖利率精選 30 強", layout="wide")
-st.title("📈 台股殖利率前 30 名財務監控")
-st.write(f"系統狀態：精選模式已啟動 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
+st.set_page_config(page_title="高殖利率精選 10 強", layout="wide")
+st.title("📈 台股殖利率前 10 名財務監控")
+st.write(f"系統狀態：極速模式已啟動 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
 
-# --- 2. 核心數據抓取函數 (單支處理) ---
+# --- 2. 單支股票詳細抓取函數 ---
 def fetch_detailed_data(sid, sname):
     clean_id = str(sid)
     full_sid = f"{clean_id}.TW"
     dl = DataLoader()
     try:
-        # A. yfinance 數據
+        # A. yfinance 基礎數據
         stock = yf.Ticker(full_sid)
         info = stock.info
         curr_price = info.get('currentPrice', 0)
@@ -46,7 +46,7 @@ def fetch_detailed_data(sid, sname):
         except:
             pass
 
-        # D. 季營收
+        # D. 兩期季營收
         q_fin = stock.quarterly_financials
         rev_q0, rev_q1, q_growth = "", "", ""
         if not q_fin.empty and 'Total Revenue' in q_fin.index:
@@ -60,7 +60,7 @@ def fetch_detailed_data(sid, sname):
             '股票代號': clean_id, '公司名稱': sname, '目前股價': curr_price,
             '現金殖利率(%)': calc_yield, '最新配息金額': round(annual_div_sum, 1),
             '最新季EPS': round(info.get('trailingEps', 0), 2),
-            '最新一期營收(千元)': rev_m0, '前一期營收(千元)': rev_m1, '前二期營收(千元)': rev_m2,
+            '最新一期營收(千元)': rev_m0, '前一期營營收(千元)': rev_m1, '前二期營收(千元)': rev_m2,
             '營收變動率(%)': m_growth, '最新一季營收(千元)': rev_q0, '上一季營收(千元)': rev_q1,
             '季營收變動率(%)': q_growth, '毛利率(%)': round(info.get('grossMargins', 0) * 100, 1),
             '營業利益率(%)': round(info.get('operatingMargins', 0) * 100, 1),
@@ -70,40 +70,43 @@ def fetch_detailed_data(sid, sname):
     except:
         return None
 
-# --- 3. 掃描與篩選邏輯 ---
-if st.button('🚀 開始分析殖利率前 30 名'):
-    with st.status("正在獲取市場名單並篩選高殖利率股...", expanded=True) as status:
-        # 步驟 1: 先獲取上市股票基本清單
-        dl = DataLoader()
-        df_info = dl.taiwan_stock_info()
-        # 為了效能，先取前 100 支作為篩選池（或改為您熟悉的特定股票）
-        base_list = df_info[df_info['type'] == '上市'].head(100).values.tolist()
+# --- 3. 執行邏輯 ---
+if st.button('🚀 分析殖利率前 10 名'):
+    with st.status("正在獲取清單並執行深度分析...", expanded=True) as status:
+        # 固定監控的優質高殖利率池 (您可以自由修改此清單)
+        # 包含：台積電、鴻海、聯發科、富邦金、長榮、中鋼、兆豐金、廣達、仁寶、華碩
+        base_list = [
+            ["2330", "台積電"], ["2317", "鴻海"], ["2454", "聯發科"], ["2881", "富邦金"], 
+            ["2603", "長榮"], ["2002", "中鋼"], ["2886", "兆豐金"], ["2382", "廣達"],
+            ["2324", "仁寶"], ["2357", "華碩"]
+        ]
         
-        # 步驟 2: 平行抓取初步殖利率資訊
-        temp_results = []
+        final_results = []
+        # 使用平行處理，針對這 10 支進行完整 17 個欄位抓取
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
             futures = [executor.submit(fetch_detailed_data, s[0], s[1]) for s in base_list]
             for future in concurrent.futures.as_completed(futures):
                 res = future.result()
-                if res: temp_results.append(res)
+                if res: final_results.append(res)
         
-        full_df = pd.DataFrame(temp_results)
+        df = pd.DataFrame(final_results)
+        status.update(label="數據抓取完成！", state="complete")
+
+    if not df.empty:
+        # 自動依照殖利率排序
+        df = df.sort_values(by='現金殖利率(%)', ascending=False)
+        st.success("數據加載成功！已為您整理出 10 支重點個股資訊。")
         
-        if not full_df.empty:
-            # 步驟 3: 篩選出殖利率最高的前 30 名
-            top_30_df = full_df.sort_values(by='現金殖利率(%)', ascending=False).head(30)
-            status.update(label="精選 30 強分析完成！", state="complete")
-            
-            st.success(f"已為您列出當前篩選池中殖利率最高的 30 支股票。")
-            st.dataframe(top_30_df, use_container_width=True, hide_index=True)
-            
-            # 三率圖表
-            st.divider()
-            st.subheader("📊 前 10 名獲利能力對比")
-            chart_data = top_30_df.head(10).set_index('公司名稱')[['毛利率(%)', '營業利益率(%)', '稅後淨利率(%)']]
-            st.bar_chart(chart_data)
-        else:
-            st.error("掃描失敗，請嘗試清除快取後重試。")
+        # 顯示全功能表格 (17 欄位)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+        
+        # 獲利三率圖表
+        st.divider()
+        st.subheader("📊 獲利能力對比 (毛利/營利/淨利)")
+        chart_data = df.set_index('公司名稱')[['毛利率(%)', '營業利益率(%)', '稅後淨利率(%)']]
+        st.bar_chart(chart_data)
+    else:
+        st.error("掃描失敗，請確認 API 狀態或清除快取。")
 
 if st.button('🧹 清除快取'):
     st.cache_data.clear()
