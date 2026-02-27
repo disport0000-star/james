@@ -7,46 +7,31 @@ import concurrent.futures
 import time
 
 # --- 1. 網頁基本設定 ---
-st.set_page_config(page_title="台股 500 強監控面板", layout="wide")
-st.title("📈 500 支個股財務監控中心 (穩定修正版)")
+st.set_page_config(page_title="高殖利率精選 30 強", layout="wide")
+st.title("📈 台股殖利率前 30 名財務監控")
+st.write(f"系統狀態：精選模式已啟動 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
 
-# --- 2. 獲取 500 支股票清單 ---
-@st.cache_data(ttl=86400)
-def get_500_stock_list():
-    try:
-        dl = DataLoader()
-        df_info = dl.taiwan_stock_info()
-        stocks = df_info[df_info['type'] == '上市'].head(500)
-        return stocks[['stock_id', 'stock_name']].values.tolist()
-    except:
-        # 備援清單 (避免 API 連線失敗導致網頁全黑)
-        return [["2330", "台積電"], ["2317", "鴻海"], ["2454", "聯發科"]]
-
-# --- 3. 單支股票處理 (強化穩定性，避開 KeyError) ---
-def process_single_stock(stock_info):
-    sid, sname = stock_info
+# --- 2. 核心數據抓取函數 (單支處理) ---
+def fetch_detailed_data(sid, sname):
     clean_id = str(sid)
     full_sid = f"{clean_id}.TW"
     dl = DataLoader()
-    
     try:
-        # A. yfinance 數據 (比較穩定，先抓)
+        # A. yfinance 數據
         stock = yf.Ticker(full_sid)
         info = stock.info
         curr_price = info.get('currentPrice', 0)
         if curr_price == 0: return None
 
-        # B. 殖利率與配息
+        # B. 殖利率與配息 (365天物理加總)
         div_history = stock.dividends
         last_year_divs = div_history[div_history.index >= (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')]
         annual_div_sum = last_year_divs.sum()
         calc_yield = round((annual_div_sum / curr_price * 100), 1) if annual_div_sum > 0 else 0.0
 
-        # C. FinMind 數據 (加入強大的錯誤攔截)
+        # C. FinMind 三期月營收
         rev_m0, rev_m1, rev_m2, m_growth = "", "", "", ""
         try:
-            # 增加一點延遲，避免 API 請求過於密集
-            time.sleep(0.05)
             df_rev = dl.taiwan_stock_month_revenue(
                 stock_id=clean_id, 
                 start_date=(datetime.now() - timedelta(days=150)).strftime('%Y-%m-%d')
@@ -59,15 +44,25 @@ def process_single_stock(stock_info):
                 r0, r1 = df_rev.iloc[0]['revenue'], df_rev.iloc[1]['revenue']
                 m_growth = f"{round(((r0-r1)/r1)*100, 1)}%" if r1 != 0 else ""
         except:
-            pass # 即使營收抓不到，也要保留股價資訊
+            pass
+
+        # D. 季營收
+        q_fin = stock.quarterly_financials
+        rev_q0, rev_q1, q_growth = "", "", ""
+        if not q_fin.empty and 'Total Revenue' in q_fin.index:
+            q_revs = q_fin.loc['Total Revenue']
+            rev_q0 = f"{round(q_revs.iloc[0]/1000):,.0f}" if len(q_revs) > 0 else ""
+            rev_q1 = f"{round(q_revs.iloc[1]/1000):,.0f}" if len(q_revs) > 1 else ""
+            v0, v1 = q_revs.iloc[0], q_revs.iloc[1]
+            q_growth = f"{round(((v0-v1)/v1)*100, 1)}%" if v1 != 0 else ""
 
         return {
             '股票代號': clean_id, '公司名稱': sname, '目前股價': curr_price,
             '現金殖利率(%)': calc_yield, '最新配息金額': round(annual_div_sum, 1),
             '最新季EPS': round(info.get('trailingEps', 0), 2),
             '最新一期營收(千元)': rev_m0, '前一期營收(千元)': rev_m1, '前二期營收(千元)': rev_m2,
-            '營收變動率(%)': m_growth,
-            '毛利率(%)': round(info.get('grossMargins', 0) * 100, 1),
+            '營收變動率(%)': m_growth, '最新一季營收(千元)': rev_q0, '上一季營收(千元)': rev_q1,
+            '季營收變動率(%)': q_growth, '毛利率(%)': round(info.get('grossMargins', 0) * 100, 1),
             '營業利益率(%)': round(info.get('operatingMargins', 0) * 100, 1),
             '稅後淨利率(%)': round(info.get('profitMargins', 0) * 100, 1),
             '更新日期': datetime.now().strftime('%Y-%m-%d')
@@ -75,31 +70,41 @@ def process_single_stock(stock_info):
     except:
         return None
 
-# --- 4. 執行按鈕與快取處理 ---
-stock_list = get_500_stock_list()
-
-if st.button('🚀 執行 500 支台股掃描'):
-    with st.status("正在逐一分析個股財報 (預計 5-8 分鐘)...", expanded=True) as status:
-        final_data = []
-        # 將執行緒降為 3，這最能兼顧速度與 API 穩定性
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-            futures = [executor.submit(process_single_stock, s) for s in stock_list]
-            for i, future in enumerate(concurrent.futures.as_completed(futures)):
-                res = future.result()
-                if res: final_data.append(res)
-                if (i+1) % 50 == 0:
-                    st.write(f"目前進度: 已完成 {i+1} 支個股...")
+# --- 3. 掃描與篩選邏輯 ---
+if st.button('🚀 開始分析殖利率前 30 名'):
+    with st.status("正在獲取市場名單並篩選高殖利率股...", expanded=True) as status:
+        # 步驟 1: 先獲取上市股票基本清單
+        dl = DataLoader()
+        df_info = dl.taiwan_stock_info()
+        # 為了效能，先取前 100 支作為篩選池（或改為您熟悉的特定股票）
+        base_list = df_info[df_info['type'] == '上市'].head(100).values.tolist()
         
-        df = pd.DataFrame(final_data)
-        status.update(label="數據處理完成！", state="complete")
+        # 步驟 2: 平行抓取初步殖利率資訊
+        temp_results = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [executor.submit(fetch_detailed_data, s[0], s[1]) for s in base_list]
+            for future in concurrent.futures.as_completed(futures):
+                res = future.result()
+                if res: temp_results.append(res)
+        
+        full_df = pd.DataFrame(temp_results)
+        
+        if not full_df.empty:
+            # 步驟 3: 篩選出殖利率最高的前 30 名
+            top_30_df = full_df.sort_values(by='現金殖利率(%)', ascending=False).head(30)
+            status.update(label="精選 30 強分析完成！", state="complete")
+            
+            st.success(f"已為您列出當前篩選池中殖利率最高的 30 支股票。")
+            st.dataframe(top_30_df, use_container_width=True, hide_index=True)
+            
+            # 三率圖表
+            st.divider()
+            st.subheader("📊 前 10 名獲利能力對比")
+            chart_data = top_30_df.head(10).set_index('公司名稱')[['毛利率(%)', '營業利益率(%)', '稅後淨利率(%)']]
+            st.bar_chart(chart_data)
+        else:
+            st.error("掃描失敗，請嘗試清除快取後重試。")
 
-    if not df.empty:
-        df = df.sort_values(by='現金殖利率(%)', ascending=False)
-        st.success(f"成功掃描 {len(df)} 支個股！已依殖利率排序。")
-        st.dataframe(df, use_container_width=True, hide_index=True)
-    else:
-        st.error("掃描失敗，請確認 API 狀態。")
-
-if st.button('🧹 清除數據快取'):
+if st.button('🧹 清除快取'):
     st.cache_data.clear()
     st.rerun()
