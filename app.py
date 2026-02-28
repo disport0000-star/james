@@ -7,9 +7,9 @@ import concurrent.futures
 import time
 
 # --- 1. 網頁基本設定 ---
-st.set_page_config(page_title="高殖利率精選 20 強", layout="wide")
-st.title("📈 台股殖利率前 20 名財務監控")
-st.write(f"系統狀態：視覺化優化版 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
+st.set_page_config(page_title="台股精選 20 強監控", layout="wide")
+st.title("📈 台股殖利率精選 20 強財務監控")
+st.write(f"系統狀態：視覺化與欄位優化版 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
 
 # --- 2. 單支股票詳細抓取函數 ---
 def fetch_detailed_data(sid, sname):
@@ -47,7 +47,7 @@ def fetch_detailed_data(sid, sname):
         except:
             pass
 
-        # D. 季營收與利潤率
+        # D. 兩期季營收
         q_fin = stock.quarterly_financials
         rev_q0, rev_q1, q_growth = "", "", ""
         if not q_fin.empty and 'Total Revenue' in q_fin.index:
@@ -62,8 +62,9 @@ def fetch_detailed_data(sid, sname):
             '現金殖利率(%)': calc_yield, '最新配息金額': round(annual_div_sum, 1),
             '最新季EPS': round(info.get('trailingEps', 0), 2),
             '最新一期營收(千元)': rev_m0, '前一期營收(千元)': rev_m1, '前二期營收(千元)': rev_m2,
-            '營收變動率(%)': m_growth, '最新一季營收(千元)': rev_q0, '上一季營收(千元)': rev_q1,
-            '季營收變動率(%)': q_growth, 
+            '與上月比較增減(%)': m_growth, 
+            '最新一季營收(千元)': rev_q0, '上一季營收(千元)': rev_q1, 
+            '與上季比較增減(%)': q_growth, 
             '毛利率(%)': round(info.get('grossMargins', 0) * 100, 1),
             '營業利益率(%)': round(info.get('operatingMargins', 0) * 100, 1),
             '稅後淨利率(%)': round(info.get('profitMargins', 0) * 100, 1),
@@ -72,9 +73,9 @@ def fetch_detailed_data(sid, sname):
     except:
         return None
 
-# --- 3. 介面執行邏輯 ---
+# --- 3. 介面控制與顯示 ---
 if st.button('🚀 分析精選 20 強'):
-    with st.status("正在抓取數據並產出長條圖...", expanded=True) as status:
+    with st.status("正在抓取精選個股財報指標...", expanded=True) as status:
         base_list = [
             ["2330", "台積電"], ["2317", "鴻海"], ["2454", "聯發科"], ["2881", "富邦金"], 
             ["2603", "長榮"], ["2002", "中鋼"], ["2886", "兆豐金"], ["2382", "廣達"],
@@ -91,32 +92,30 @@ if st.button('🚀 分析精選 20 強'):
                 if res: final_results.append(res)
         
         df = pd.DataFrame(final_results)
-        status.update(label="分析完成！", state="complete")
+        status.update(label="數據分析完成！", state="complete")
 
     if not df.empty:
-        # 依照殖利率排序
+        # 自動依照殖利率排序
         df = df.sort_values(by='現金殖利率(%)', ascending=False)
-        st.success("數據加載成功！已依殖利率由高至低排列。")
+        st.success("數據加載成功！")
         
-        # A. 顯示精簡後的數據表格
+        # 表格顯示 (已包含新欄位名稱)
         st.dataframe(df, use_container_width=True, hide_index=True)
         
-        # B. 視覺化優化：長條圖對比 (依序排列)
+        # 圖表優化：三率長條圖 (依毛利率排列)
         st.divider()
-        st.subheader("📊 關鍵獲利三率對比 (由高至低排列)")
-        
-        # 準備圖表數據並依照毛利率排序
+        st.subheader("📊 關鍵獲利三率對比 (依序排列)")
         chart_df = df.set_index('公司名稱')[['毛利率(%)', '營業利益率(%)', '稅後淨利率(%)']].sort_values(by='毛利率(%)', ascending=False)
         st.bar_chart(chart_df)
         
-        # C. 顯示殖利率
-        st.subheader("💰 目前現金殖利率 (%) 概覽")
+        # 圖表優化：殖利率顯示 (長條圖)
+        st.subheader("💰 現金殖利率 (%) 概覽 (由高至低)")
         yield_chart = df.set_index('公司名稱')[['現金殖利率(%)']].sort_values(by='現金殖利率(%)', ascending=False)
-        st.bar_chart(yield_chart, color="#FF4B4B") # 使用紅色標示殖利率
+        st.bar_chart(yield_chart, color="#FF4B4B")
         
     else:
-        st.error("掃描失敗，請確認網路連線。")
+        st.error("掃描失敗，請檢查 API 連線。")
 
-if st.button('🧹 清除數據'):
+if st.button('🧹 清除快取'):
     st.cache_data.clear()
     st.rerun()
