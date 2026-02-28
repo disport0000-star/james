@@ -9,7 +9,7 @@ import time
 # --- 1. 網頁基本設定 ---
 st.set_page_config(page_title="台股精選 20 強監控", layout="wide")
 st.title("📈 台股殖利率精選 20 強財務監控")
-st.write(f"系統狀態：欄位優化版 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
+st.write(f"系統狀態：EPS 歷史數據優化版 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
 
 # --- 2. 單支股票詳細抓取函數 ---
 def fetch_detailed_data(sid, sname):
@@ -23,22 +23,33 @@ def fetch_detailed_data(sid, sname):
         curr_price = info.get('currentPrice') or info.get('regularMarketPrice', 0)
         if curr_price == 0: return None
 
-        # B. 殖利率與配息 (優化：區分現金與股票股利)
+        # B. 殖利率與配息
         div_history = stock.dividends
-        # 處理時區問題，抓取過去 365 天的配息
         last_year_divs = div_history[div_history.index.tz_localize(None) >= (datetime.now() - timedelta(days=365))]
         
-        # 現金股利 (更名自：最新配息金額)
         cash_div = round(last_year_divs.sum(), 2) if not last_year_divs.empty else 0.0
-        
-        # 股票股利 (新增資訊)
         stock_div = info.get('stockDividendValue', 0.0)
         if stock_div is None: stock_div = 0.0
         
-        # 計算現金殖利率
         calc_yield = round((cash_div / curr_price * 100), 1) if cash_div > 0 else 0.0
 
-        # C. FinMind 三期月營收 (加入延遲保護)
+        # C. EPS 歷史數據 (新增：上一季與上上季)
+        # yfinance 的 trailingEps 通常代表最新一季或滾動四季，這裡從財報中抓取更準確的季資料
+        q_earnings = stock.quarterly_earnings
+        eps_q0, eps_q1, eps_q2 = 0.0, 0.0, 0.0
+        
+        # 嘗試從 info 抓取最新 EPS
+        eps_q0 = round(info.get('trailingEps', 0), 2)
+        
+        # 從 quarterly_financials 抓取歷史 EPS (Diluted EPS)
+        q_fin = stock.quarterly_financials
+        if not q_fin.empty and 'Diluted EPS' in q_fin.index:
+            eps_series = q_fin.loc['Diluted EPS'].dropna()
+            if len(eps_series) > 0: eps_q0 = round(eps_series.iloc[0], 2)
+            if len(eps_series) > 1: eps_q1 = round(eps_series.iloc[1], 2)
+            if len(eps_series) > 2: eps_q2 = round(eps_series.iloc[2], 2)
+
+        # D. FinMind 三期月營收
         time.sleep(0.1) 
         rev_m0, rev_m1, rev_m2, m_growth = "", "", "", ""
         try:
@@ -56,8 +67,7 @@ def fetch_detailed_data(sid, sname):
         except:
             pass
 
-        # D. 兩期季營收
-        q_fin = stock.quarterly_financials
+        # E. 兩期季營收
         rev_q0, rev_q1, q_growth = "", "", ""
         if not q_fin.empty and 'Total Revenue' in q_fin.index:
             q_revs = q_fin.loc['Total Revenue']
@@ -71,9 +81,11 @@ def fetch_detailed_data(sid, sname):
             '公司名稱': sname, 
             '目前股價': curr_price,
             '現金殖利率(%)': calc_yield, 
-            '現金股利': cash_div,           # 已更名
-            '股票股利': stock_div,         # 新增欄位
-            '最新季EPS': round(info.get('trailingEps', 0), 2),
+            '現金股利': cash_div,
+            '股票股利': stock_div,
+            '最新季EPS': eps_q0,            # 原始欄位
+            '上一季EPS': eps_q1,            # 新增欄位
+            '上上一季EPS': eps_q2,          # 新增欄位
             '最新一期營收(千元)': rev_m0, 
             '前一期營收(千元)': rev_m1, 
             '前二期營收(千元)': rev_m2,
@@ -101,7 +113,6 @@ if st.button('🚀 分析精選 20 強'):
         ]
         
         final_results = []
-        # 使用 ThreadPoolExecutor 加速抓取
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
             futures = [executor.submit(fetch_detailed_data, s[0], s[1]) for s in base_list]
             for future in concurrent.futures.as_completed(futures):
@@ -112,20 +123,15 @@ if st.button('🚀 分析精選 20 強'):
         status.update(label="數據分析完成！", state="complete")
 
     if not df.empty:
-        # 自動依照殖利率排序
         df = df.sort_values(by='現金殖利率(%)', ascending=False)
         st.success("數據加載成功！")
-        
-        # 表格顯示
         st.dataframe(df, use_container_width=True, hide_index=True)
         
-        # 圖表：關鍵獲利三率對比
         st.divider()
         st.subheader("📊 關鍵獲利三率對比 (依序排列)")
         chart_df = df.set_index('公司名稱')[['毛利率(%)', '營業利益率(%)', '稅後淨利率(%)']].sort_values(by='毛利率(%)', ascending=False)
         st.bar_chart(chart_df)
         
-        # 圖表：殖利率顯示
         st.subheader("💰 現金殖利率 (%) 概覽 (由高至低)")
         yield_chart = df.set_index('公司名稱')[['現金殖利率(%)']].sort_values(by='現金殖利率(%)', ascending=False)
         st.bar_chart(yield_chart, color="#FF4B4B")
