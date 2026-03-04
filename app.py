@@ -5,6 +5,7 @@ from FinMind.data import DataLoader
 from datetime import datetime, timedelta
 import concurrent.futures
 import time
+import io
 
 # --- 1. 網頁基本設定 ---
 st.set_page_config(page_title="台股精選 100 強監控", layout="wide")
@@ -13,7 +14,7 @@ st.title("📈 台股市值前 100 強財務監控")
 # 已填入您的 FinMind 金鑰
 FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMy0wNSAwMToyNzoxNiIsInVzZXJfaWQiOiJqYW1lc2FjZTA4IiwiZW1haWwiOiJkaXNwb3J0YWNlQHlhaG9vLmNvbS50dyIsImlwIjoiMjcuMjQwLjE3OC41MCJ9.23luowIBnVWfgnNDoclVYo6nwFWqzEf3zxya81Cnl2A" 
 
-st.write(f"系統狀態：市值前 100 強自動掃描版 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
+st.write(f"系統狀態：前 20 名顯示 + 全量 Excel 下載版 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
 
 # --- 2. 單支股票詳細抓取函數 ---
 def fetch_detailed_data(sid, sname):
@@ -91,7 +92,7 @@ def fetch_detailed_data(sid, sname):
             '上一季EPS': eps_q1,
             '上上一季EPS': eps_q2,
             '最新一期營收(千元)': rev_m0, 
-            '前一期營收(千元)': rev_m1, 
+            '前一期營eu營收(千元)': rev_m1, 
             '前二期營收(千元)': rev_m2,
             '與上月比較增減(%)': m_growth, 
             '最新一季營收(千元)': rev_q0, 
@@ -106,54 +107,12 @@ def fetch_detailed_data(sid, sname):
         return None
 
 # --- 3. 獲取前 100 強名單 ---
-@st.cache_data(ttl=86400) # 名單每天更新一次即可
+@st.cache_data(ttl=86400)
 def get_top_100_stocks():
     dl = DataLoader()
     dl.login(token=FINMIND_TOKEN)
-    # 獲取台股所有股票基本資訊
     df_info = dl.taiwan_stock_info()
-    # 篩選上市個股 (主要為 0050, 0051 成分股範疇)
     df_info = df_info[df_info['type'] == 'twse']
-    
-    # 這裡我們利用 0050 + 0051 作為前 150 強參考，再由 yfinance 抓取市值排序
-    # 簡化版：先取常用的前 150 支，再過濾出前 100
-    sample_list = df_info['stock_id'].head(150).tolist()
-    
     return [[row['stock_id'], row['stock_name']] for _, row in df_info.head(100).iterrows()]
 
-# --- 4. 介面控制與顯示 ---
-if st.button('🚀 啟動 100 強全方位掃描'):
-    with st.status("正在初始化 100 強名單並抓取財報...", expanded=True) as status:
-        base_list = get_top_100_stocks()
-        
-        final_results = []
-        # 處理 100 支股票，將 worker 提升至 15
-        with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
-            futures = [executor.submit(fetch_detailed_data, s[0], s[1]) for s in base_list]
-            for future in concurrent.futures.as_completed(futures):
-                res = future.result()
-                if res: final_results.append(res)
-        
-        df = pd.DataFrame(final_results)
-        status.update(label=f"完成！已成功分析 {len(df)} 支個股數據", state="complete")
-
-    if not df.empty:
-        df = df.sort_values(by='現金殖利率(%)', ascending=False)
-        st.success(f"數據加載成功！目前顯示前 {len(df)} 強資訊")
-        st.dataframe(df, use_container_width=True, hide_index=True)
-        
-        st.divider()
-        st.subheader("📊 關鍵獲利三率對比 (依毛利排序 - 前 20 名)")
-        chart_df = df.head(20).set_index('公司名稱')[['毛利率(%)', '營業利益率(%)', '稅後淨利率(%)']].sort_values(by='毛利率(%)', ascending=False)
-        st.bar_chart(chart_df)
-        
-        st.subheader("💰 現金殖利率 (%) 概覽 (前 20 名)")
-        yield_chart = df.head(20).set_index('公司名稱')[['現金殖利率(%)']].sort_values(by='現金殖利率(%)', ascending=False)
-        st.bar_chart(yield_chart, color="#FF4B4B")
-        
-    else:
-        st.error("掃描失敗，請檢查 API 連線狀態。")
-
-if st.button('🧹 清除快取'):
-    st.cache_data.clear()
-    st.rerun()
+# --- 4. 輔助函數：Excel
