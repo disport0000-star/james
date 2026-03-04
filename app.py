@@ -9,13 +9,24 @@ import time
 # --- 1. 網頁基本設定 ---
 st.set_page_config(page_title="台股精選 20 強監控", layout="wide")
 st.title("📈 台股殖利率精選 20 強財務監控")
-st.write(f"系統狀態：EPS 歷史數據優化版 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
+
+# 已填入您的 FinMind 金鑰
+FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMy0wNSAwMToyNzoxNiIsInVzZXJfaWQiOiJqYW1lc2FjZTA4IiwiZW1haWwiOiJkaXNwb3J0YWNlQHlhaG9vLmNvbS50dyIsImlwIjoiMjcuMjQwLjE3OC41MCJ9.23luowIBnVWfgnNDoclVYo6nwFWqzEf3zxya81Cnl2A" 
+
+st.write(f"系統狀態：FinMind 加速版 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
 
 # --- 2. 單支股票詳細抓取函數 ---
 def fetch_detailed_data(sid, sname):
     clean_id = str(sid)
     full_sid = f"{clean_id}.TW"
+    
+    # 初始化 DataLoader 並登入
     dl = DataLoader()
+    try:
+        dl.login(token=FINMIND_TOKEN)
+    except:
+        pass # 登入失敗則嘗試匿名抓取
+        
     try:
         # A. yfinance 基礎數據
         stock = yf.Ticker(full_sid)
@@ -23,7 +34,7 @@ def fetch_detailed_data(sid, sname):
         curr_price = info.get('currentPrice') or info.get('regularMarketPrice', 0)
         if curr_price == 0: return None
 
-        # B. 殖利率與配息
+        # B. 殖利率與配息 (現金 vs 股票)
         div_history = stock.dividends
         last_year_divs = div_history[div_history.index.tz_localize(None) >= (datetime.now() - timedelta(days=365))]
         
@@ -33,24 +44,20 @@ def fetch_detailed_data(sid, sname):
         
         calc_yield = round((cash_div / curr_price * 100), 1) if cash_div > 0 else 0.0
 
-        # C. EPS 歷史數據 (新增：上一季與上上季)
-        # yfinance 的 trailingEps 通常代表最新一季或滾動四季，這裡從財報中抓取更準確的季資料
-        q_earnings = stock.quarterly_earnings
+        # C. EPS 歷史數據 (最新、上一季、上上一季)
         eps_q0, eps_q1, eps_q2 = 0.0, 0.0, 0.0
         
-        # 嘗試從 info 抓取最新 EPS
-        eps_q0 = round(info.get('trailingEps', 0), 2)
-        
-        # 從 quarterly_financials 抓取歷史 EPS (Diluted EPS)
         q_fin = stock.quarterly_financials
         if not q_fin.empty and 'Diluted EPS' in q_fin.index:
             eps_series = q_fin.loc['Diluted EPS'].dropna()
             if len(eps_series) > 0: eps_q0 = round(eps_series.iloc[0], 2)
             if len(eps_series) > 1: eps_q1 = round(eps_series.iloc[1], 2)
             if len(eps_series) > 2: eps_q2 = round(eps_series.iloc[2], 2)
+        else:
+            # 若無 Diluted EPS，嘗試從 info 抓取基礎 EPS
+            eps_q0 = round(info.get('trailingEps', 0), 2)
 
         # D. FinMind 三期月營收
-        time.sleep(0.1) 
         rev_m0, rev_m1, rev_m2, m_growth = "", "", "", ""
         try:
             df_rev = dl.taiwan_stock_month_revenue(
@@ -83,9 +90,9 @@ def fetch_detailed_data(sid, sname):
             '現金殖利率(%)': calc_yield, 
             '現金股利': cash_div,
             '股票股利': stock_div,
-            '最新季EPS': eps_q0,            # 原始欄位
-            '上一季EPS': eps_q1,            # 新增欄位
-            '上上一季EPS': eps_q2,          # 新增欄位
+            '最新季EPS': eps_q0,
+            '上一季EPS': eps_q1,
+            '上上一季EPS': eps_q2,
             '最新一期營收(千元)': rev_m0, 
             '前一期營收(千元)': rev_m1, 
             '前二期營收(千元)': rev_m2,
@@ -103,7 +110,7 @@ def fetch_detailed_data(sid, sname):
 
 # --- 3. 介面控制與顯示 ---
 if st.button('🚀 分析精選 20 強'):
-    with st.status("正在抓取精選個股財報指標...", expanded=True) as status:
+    with st.status("正在抓取精選個股財報指標 (已登入 FinMind)...", expanded=True) as status:
         base_list = [
             ["2330", "台積電"], ["2317", "鴻海"], ["2454", "聯發科"], ["2881", "富邦金"], 
             ["2603", "長榮"], ["2002", "中鋼"], ["2886", "兆豐金"], ["2382", "廣達"],
@@ -113,7 +120,8 @@ if st.button('🚀 分析精選 20 強'):
         ]
         
         final_results = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        # 使用 Token 後，提升併發線程至 10
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
             futures = [executor.submit(fetch_detailed_data, s[0], s[1]) for s in base_list]
             for future in concurrent.futures.as_completed(futures):
                 res = future.result()
