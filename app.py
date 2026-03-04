@@ -4,7 +4,6 @@ import pandas as pd
 from FinMind.data import DataLoader
 from datetime import datetime, timedelta
 import concurrent.futures
-import time
 import io
 
 # --- 1. 網頁基本設定 ---
@@ -14,13 +13,12 @@ st.title("📈 台股市值前 100 強財務監控")
 # 已填入您的 FinMind 金鑰
 FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMy0wNSAwMToyNzoxNiIsInVzZXJfaWQiOiJqYW1lc2FjZTA4IiwiZW1haWwiOiJkaXNwb3J0YWNlQHlhaG9vLmNvbS50dyIsImlwIjoiMjcuMjQwLjE3OC41MCJ9.23luowIBnVWfgnNDoclVYo6nwFWqzEf3zxya81Cnl2A" 
 
-st.write(f"系統狀態：穩定除錯版 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
+st.write(f"系統狀態：穩定執行版 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
 
 # --- 2. 核心抓取函數 ---
-@st.cache_data(ttl=3600)  # 資料快取 1 小時
+@st.cache_data(ttl=3600)
 def get_all_stock_data(base_list):
     final_results = []
-    # 使用線程池加速
     with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
         futures = [executor.submit(fetch_single_stock, s[0], s[1]) for s in base_list]
         for future in concurrent.futures.as_completed(futures):
@@ -31,7 +29,7 @@ def get_all_stock_data(base_list):
 def fetch_single_stock(sid, sname):
     clean_id = str(sid)
     full_sid = f"{clean_id}.TW"
-    # 修正：DataLoader 不使用 login，直接初始化或在需要時帶入 token
+    # 初始化 DataLoader 時直接帶入 Token (若 API 支援)
     dl = DataLoader()
     
     try:
@@ -40,7 +38,7 @@ def fetch_single_stock(sid, sname):
         curr_price = info.get('currentPrice') or info.get('regularMarketPrice', 0)
         if curr_price == 0: return None
 
-        # 配息資料 (修正時區比較問題)
+        # 配息資料
         div_history = stock.dividends
         if not div_history.empty:
             last_year_divs = div_history[div_history.index.tz_localize(None) >= (datetime.now() - timedelta(days=365))]
@@ -62,13 +60,10 @@ def fetch_single_stock(sid, sname):
         else:
             eps_q0 = round(info.get('trailingEps', 0), 2)
 
-        # 營收抓取 (使用 token 提高穩定性)
+        # 營收與毛利
         rev_m0, r_growth = "", ""
         try:
-            df_rev = dl.taiwan_stock_month_revenue(
-                stock_id=clean_id, 
-                start_date=(datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d')
-            )
+            df_rev = dl.taiwan_stock_month_revenue(stock_id=clean_id, start_date=(datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d'))
             if not df_rev.empty:
                 df_rev = df_rev.sort_values('date', ascending=False)
                 rev_m0 = f"{round(df_rev.iloc[0]['revenue'] / 1000):,.0f}"
@@ -91,33 +86,30 @@ def fetch_single_stock(sid, sname):
 # --- 3. 獲取名單與 Excel 轉換 ---
 @st.cache_data(ttl=86400)
 def get_top_100_list():
-    # 修正：DataLoader 移除 login 呼叫
     dl = DataLoader()
     df_info = dl.taiwan_stock_info()
     df_info = df_info[df_info['type'] == 'twse']
-    # 根據代號排序或直接取前 100
     return [[row['stock_id'], row['stock_name']] for _, row in df_info.head(100).iterrows()]
 
 def to_excel(df):
     output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+    # 修正：改用 openpyxl 引擎，避免 xlsxwriter 缺失問題
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Data')
     return output.getvalue()
 
 # --- 4. 介面主邏輯 ---
-# 使用 st.session_state 確保資料顯示更穩定
 if st.button('🚀 執行 100 強數據分析'):
     base_list = get_top_100_list()
     
-    with st.status("🔍 正在掃描台股市值前 100 大個股財報...", expanded=True) as status:
+    with st.status("🔍 正在分析台股市值前 100 大個股...", expanded=True) as status:
         full_df = get_all_stock_data(base_list)
-        status.update(label="✅ 100 強數據分析完成！", state="complete")
+        status.update(label="✅ 分析完成！", state="complete")
     
     if not full_df.empty:
-        # 排序
         full_df = full_df.sort_values(by='現金殖利率(%)', ascending=False)
         
-        # 下載按鈕
+        # 下載按鈕 (優先顯示)
         st.download_button(
             label="📥 下載完整 100 強個股財報 Excel",
             data=to_excel(full_df),
@@ -126,16 +118,14 @@ if st.button('🚀 執行 100 強數據分析'):
         )
         
         # 顯示前 20
-        st.subheader("💰 現金殖利率前 20 名名單")
+        st.subheader("💰 現金殖利率前 20 名")
         st.dataframe(full_df.head(20), use_container_width=True, hide_index=True)
         
         # 圖表
-        st.divider()
-        st.subheader("📊 前 20 名殖利率視覺化")
         st.bar_chart(full_df.head(20).set_index('公司名稱')[['現金殖利率(%)']])
     else:
-        st.error("無法取得數據，請確認您的網路環境或稍後再試。")
+        st.error("無法取得數據，請確認連線。")
 
-if st.button('🧹 清除快取重整'):
+if st.button('🧹 清除快取'):
     st.cache_data.clear()
     st.rerun()
