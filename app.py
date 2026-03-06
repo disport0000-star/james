@@ -8,17 +8,17 @@ import io
 import altair as alt
 
 # --- 1. 網頁基本設定 ---
-st.set_page_config(page_title="台股精選 100 強財務監控", layout="wide")
+st.set_page_config(page_title="台股 100 強財務監控", layout="wide")
 st.title("📈 台股市值前 100 強財務監控")
 
 # 您的 FinMind 金鑰
 FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMy0wNSAwMToyNzoxNiIsInVzZXJfaWQiOiJqYW1lc2FjZTA4IiwiZW1haWwiOiJkaXNwb3J0YWNlQHlhaG9vLmNvbS50dyIsImlwIjoiMjcuMjQwLjE3OC41MCJ9.23luowIBnVWfgnNDoclVYo6nwFWqzEf3zxya81Cnl2A" 
 
-# --- 2. 擷取並製作「盤後」三大法人看板 ---
-def display_institutional_investors():
+# --- 2. 擷取三大法人盤後統計並製作表格 ---
+def display_institutional_table():
     dl = DataLoader()
     try:
-        # 抓取過去 10 天資料，確保在週末也能抓到最新結算數據
+        # 抓取過去 10 天資料以確保包含最新結算日
         df = dl.taiwan_stock_institutional_investors(
             stock_id="", 
             start_date=(datetime.now() - timedelta(days=10)).strftime('%Y-%m-%d')
@@ -27,45 +27,51 @@ def display_institutional_investors():
             st.info("💡 目前尚未取得最新盤後法人統計數據。")
             return
         
-        # 取得資料庫中最新的一個交易日
+        # 取得最新交易日數據
         latest_date = df['date'].max()
-        df_latest = df[df['date'] == latest_date]
+        df_latest = df[df['date'] == latest_date].copy()
         
-        st.subheader(f"🏛️ 三大法人盤後買賣超統計 (結算日期: {latest_date})")
+        # 定義中文名稱對照與順序
+        name_map = {
+            'Foreign_Investor': '外資及陸資',
+            'Investment_Trust': '投信',
+            'Dealer_self': '自營商(自行買賣)',
+            'Dealer_Hedging': '自營商(避險)',
+            'Foreign_Dealer_Self': '外資自營商'
+        }
         
-        col1, col2, col3 = st.columns(3)
+        # 轉換單位為「億元」並整理格式
+        df_latest['單位'] = '億元'
+        df_latest['買進(億)'] = (df_latest['buy'] / 10**8).round(1)
+        df_latest['賣出(億)'] = (df_latest['sell'] / 10**8).round(1)
+        df_latest['買賣超(億)'] = df_latest['買進(億)'] - df_latest['賣出(億)']
+        df_latest['法人項目'] = df_latest['name'].map(name_map)
         
-        def render_box(container, display_name, data_names):
-            sub_df = df_latest[df_latest['name'].isin(data_names)]
-            if not sub_df.empty:
-                buy = sub_df['buy'].sum() / 10**8
-                sell = sub_df['sell'].sum() / 10**8
-                net = buy - sell
-                # 顏色邏輯：正數綠色，負數紅色
-                color = "#00ff00" if net >= 0 else "#ff4b4b"
-                sign = "+" if net >= 0 else ""
-                
-                with container:
-                    st.markdown(f"**{display_name}**")
-                    st.markdown(f"<h3 style='color: {color}; margin-top: 0;'>{sign}{net:.1f} 億</h3>", unsafe_allow_html=True)
-                    st.markdown(f"<p style='font-size: 0.85em;'>買進 <span style='color: #ffb3b3;'>{buy:.1f} 億</span> | 賣出 <span style='color: #b3ffb3;'>{sell:.1f} 億</span></p>", unsafe_allow_html=True)
-                    st.write("---")
+        # 過濾並重新排序表格
+        final_table = df_latest.dropna(subset=['法人項目'])
+        final_table = final_table[['法人項目', '買進(億)', '賣出(億)', '買賣超(億)']]
+        
+        st.subheader(f"🏛️ 三大法人盤後買賣超統計表 ({latest_date})")
+        
+        # 使用顏色呈現買賣超
+        def color_net(val):
+            color = 'red' if val < 0 else 'green'
+            return f'color: {color}; font-weight: bold'
 
-        # 模仿圖片排版：外資、投信、自營商各佔一區
-        render_box(col1, "外資及陸資", ["Foreign_Investor"])
-        render_box(col1, "自營商(避險)", ["Dealer_Hedging"])
-        render_box(col2, "投信", ["Investment_Trust"])
-        render_box(col2, "自營商(自行買賣)", ["Dealer_self"])
-        render_box(col3, "外資自營商", ["Foreign_Dealer_Self"])
+        st.dataframe(
+            final_table.style.applymap(color_net, subset=['買賣超(億)']),
+            use_container_width=True,
+            hide_index=True
+        )
 
     except Exception:
-        st.info("💡 盤後數據更新中，或 API 連線暫時中斷。")
+        st.info("💡 盤後數據更新中，請稍候。")
 
-# 顯示置頂法人看板
-display_institutional_investors()
+# 顯示置頂表格
+display_institutional_table()
 st.divider()
 
-# --- 3. 核心個股抓取與快取邏輯 ---
+# --- 3. 核心個股抓取函數 ---
 @st.cache_data(ttl=3600)
 def get_all_stock_data(base_list):
     final_results = []
@@ -85,18 +91,16 @@ def fetch_single_stock(sid, sname):
         curr_price = info.get('currentPrice') or info.get('regularMarketPrice', 0)
         if curr_price == 0: return None
 
-        # 殖利率與配息
+        # 殖利率
         div_history = stock.dividends
         if not div_history.empty:
             last_year_divs = div_history[div_history.index.tz_localize(None) >= (datetime.now() - timedelta(days=365))]
             cash_div = round(last_year_divs.sum(), 2)
         else:
             cash_div = 0.0
-        
-        stock_div = info.get('stockDividendValue', 0.0) or 0.0
         calc_yield = round((cash_div / curr_price * 100), 1) if cash_div > 0 else 0.0
 
-        # EPS (最新三季)
+        # EPS 歷史
         eps_q0, eps_q1, eps_q2 = 0.0, 0.0, 0.0
         q_fin = stock.quarterly_financials
         if not q_fin.empty and 'Diluted EPS' in q_fin.index:
@@ -107,54 +111,50 @@ def fetch_single_stock(sid, sname):
 
         return {
             '股票代號': clean_id, '公司名稱': sname, '目前股價': curr_price,
-            '現金殖利率(%)': calc_yield, '現金股利': cash_div, '股票股利': stock_div,
+            '現金殖利率(%)': calc_yield, '現金股利': cash_div,
             '最新季EPS': eps_q0, '上一季EPS': eps_q1, '上上一季EPS': eps_q2,
             '更新日期': datetime.now().strftime('%Y-%m-%d')
         }
     except: return None
 
-# --- 4. 獲取 100 強名單與 Excel 轉換 ---
+# --- 4. 名單與 Excel 邏輯 ---
 @st.cache_data(ttl=86400)
 def get_top_100_list():
     dl = DataLoader()
-    # 修正：不使用 login，直接抓取名單並去重
     df_info = dl.taiwan_stock_info()
     df_info = df_info[df_info['type'] == 'twse'].drop_duplicates(subset=['stock_id'])
     return [[row['stock_id'], row['stock_name']] for _, row in df_info.head(100).iterrows()]
 
 def to_excel(df):
     output = io.BytesIO()
-    # 修正：改用 openpyxl 引擎，避免套件缺失錯誤
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Data')
     return output.getvalue()
 
 # --- 5. 介面操作區 ---
-if st.button('🚀 執行 100 強數據分析'):
+if st.button('🚀 執行 100 強全方位掃描'):
     base_list = get_top_100_list()
-    with st.status("🔍 正在抓取並分析台股市值前 100 大個股...", expanded=True) as status:
+    with st.status("🔍 正在分析台股市值前 100 大個股財報...", expanded=True) as status:
         full_df = get_all_stock_data(base_list)
-        status.update(label="✅ 100 強分析完成！", state="complete")
+        status.update(label="✅ 分析完成！", state="complete")
     
     if not full_df.empty:
-        # 去重與排序
         full_df = full_df.drop_duplicates(subset=['股票代號']).sort_values(by='現金殖利率(%)', ascending=False)
         
-        # 下載按鈕 (修正引號未閉合之 SyntaxError)
+        file_timestamp = datetime.now().strftime('%Y%m%d')
         st.download_button(
             label="📥 下載完整 100 強個股財報 Excel",
             data=to_excel(full_df),
-            file_name=f"Taiwan_Top100_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            file_name=f"Taiwan_Top100_{file_timestamp}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
         
-        st.subheader("💰 現金殖利率前 20 名 (畫面上僅顯示 Top 20)")
+        st.subheader("💰 現金殖利率前 20 名 (表格顯示)")
         display_df = full_df.head(20).reset_index(drop=True)
         st.dataframe(display_df, use_container_width=True, hide_index=True)
         
-        # 視覺化圖表：固定縱軸 0-15，禁用滾輪縮放
         st.divider()
-        st.subheader("📊 前 20 名殖利率視覺化趨勢")
+        st.subheader("📊 前 20 名殖利率視覺化 (座標軸固定)")
         chart = alt.Chart(display_df).mark_bar(color='#FF4B4B').encode(
             x=alt.X('公司名稱:N', sort='-y', title='公司名稱'),
             y=alt.Y('現金殖利率(%):Q', scale=alt.Scale(domain=[0, 15]), title='現金殖利率 (%)'),
@@ -162,7 +162,7 @@ if st.button('🚀 執行 100 強數據分析'):
         ).properties(height=400).interactive(bind_y=False)
         st.altair_chart(chart, use_container_width=True)
     else:
-        st.error("無法取得數據，請確認網路或 API 狀態。")
+        st.error("掃描失敗，請稍後再試。")
 
 if st.button('🧹 清除快取'):
     st.cache_data.clear()
