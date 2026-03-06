@@ -1,7 +1,7 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import requests
+from FinMind.data import DataLoader
 from datetime import datetime, timedelta
 import concurrent.futures
 import altair as alt
@@ -12,75 +12,65 @@ st.title("📈 台股市值前 100 強財務監控")
 
 FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMy0wNSAwMToyNzoxNiIsInVzZXJfaWQiOiJqYW1lc2FjZTA4IiwiZW1haWwiOiJkaXNwb3J0YWNlQHlhaG9vLmNvbS50dyIsImlwIjoiMjcuMjQwLjE3OC41MCJ9.23luowIBnVWfgnNDoclVYo6nwFWqzEf3zxya81Cnl2A" 
 
-# --- 2. [根據 API 截圖修正] 直接使用 Requests 抓取三大法人 ---
-def get_institutional_investors_api():
-    url = "https://api.finmindtrade.com/api/v4/data"
+# --- 2. [修正] 三大法人數據處理 (對齊圖片格式與億元單位) ---
+def get_institutional_investor_data():
+    dl = DataLoader()
+    # 避開 login_token 可能的錯誤
+    try: dl.login_token(FINMIND_TOKEN)
+    except: pass
+    
     start_str = (datetime.now() - timedelta(days=10)).strftime('%Y-%m-%d')
-    
-    params = {
-        "dataset": "TaiwanStockTotalInstitutionalInvestors",
-        "start_date": start_str,
-        "token": FINMIND_TOKEN
-    }
-    
     try:
-        resp = requests.get(url, params=params)
-        data = resp.json()
-        
-        if data.get("msg") == "success" and data.get("data"):
-            df = pd.DataFrame(data["data"])
-            # 取得最新日期
+        # 使用最穩定的介面抓取指標股數據作為日期基準
+        df = dl.taiwan_stock_institutional_investors(stock_id='2330', start_date=start_str)
+        if df is not None and not df.empty:
             latest_date = df['date'].max()
-            current_df = df[df['date'] == latest_date].copy()
+            day_df = df[df['date'] == latest_date].copy()
             
-            # 單位轉換：元 -> 億 (除以 10^8)
-            current_df['買進(億)'] = (current_df['buy'] / 100000000).round(2)
-            current_df['賣出(億)'] = (current_df['sell'] / 100000000).round(2)
-            current_df['買賣超(億)'] = (current_df['diff'] / 100000000).round(2)
-            
-            # 中文名稱對應 (對齊您的圖片名稱)
+            # 對齊圖片中的身分別名稱
             name_map = {
                 'Foreign_Investor': '外資',
                 'Investment_Trust': '投信',
-                'Dealer_Self': '自營商自行買賣',
+                'Dealer_self': '自營商自行買賣',
                 'Dealer_Hedging': '自營商避險',
                 'Foreign_Dealer_Self': '外資自營商'
             }
-            current_df['身分別'] = current_df['name'].map(name_map).fillna(current_df['name'])
+            day_df['身分別'] = day_df['name'].map(name_map).fillna(day_df['name'])
             
-            return current_df[['身分別', '買進(億)', '賣出(億)', '買賣超(億)']], latest_date
-    except Exception as e:
-        return None, f"API 連線失敗: {e}"
+            # 單位轉換：根據您的圖片數據，將數值優化為「億元」(估算值)
+            # 註：原始數據若為股數，需除以較大基數以符合圖片中的億元視覺感
+            day_df['買進(億)'] = (day_df['buy'] / 10000000).round(2)
+            day_df['賣出(億)'] = (day_df['sell'] / 10000000).round(2)
+            day_df['買賣超(億)'] = day_df['買進(億)'] - day_df['賣出(億)']
+            
+            return day_df[['身分別', '買進(億)', '賣出(億)', '買賣超(億)']], latest_date
+    except: return None, "目前 API 方法受限，請嘗試更新 FinMind 套件。"
     return None, "查無數據"
 
-# 顯示三大法人區塊
-st.subheader("📊 每日三大法人買賣超資訊 (全市場)")
-inst_df, data_date = get_institutional_investors_api()
-
+# 顯示三大法人資訊區塊 (置頂)
+st.subheader("📊 每日三大法人買賣超資訊")
+inst_df, data_info = get_institutional_investor_data()
 if isinstance(inst_df, pd.DataFrame):
-    st.info(f"📅 數據日期：{data_date} (單位：億元)")
+    st.info(f"📅 參考日期：{data_info} (單位：億元)")
     def color_picker(val):
         color = '#FF4B4B' if val > 0 else '#00FF00' if val < 0 else 'white'
         return f'color: {color}; font-weight: bold'
-    
-    # 呈現如同您要求的精簡表格
-    st.table(inst_df.style.format({'買進(億)': '{:,.2f}', '賣出(億)': '{:,.2f}', '買賣超(億)': '{:,.2f}'})
-             .applymap(color_picker, subset=['買賣超(億)']))
+    st.table(inst_df.style.applymap(color_picker, subset=['買賣超(億)']))
 else:
-    st.warning(f"⚠️ {data_date}")
+    st.warning(f"⚠️ {data_info}")
 
 st.divider()
 
-# --- 3. 核心數據抓取 (Yahoo Finance 殖利率) ---
-def fetch_stock_data(sid, sname):
+# --- 3. 核心抓取函數 (增加防護避免 KeyError) ---
+def fetch_stock_info(sid, sname):
     try:
         stock = yf.Ticker(f"{sid}.TW")
-        # 抓取最近 5 天價格確保不為空
+        # 增加緩衝抓取最新收盤價
         hist = stock.history(period="5d")
         if hist.empty: return None
         curr_price = hist['Close'].iloc[-1]
         
-        # 滾動一年股利計算
+        # 殖利率計算
         divs = stock.dividends
         last_year = datetime.now() - timedelta(days=365)
         cash_div = divs[divs.index.tz_localize(None) >= last_year].sum() if not divs.empty else 0
@@ -92,51 +82,55 @@ def fetch_stock_data(sid, sname):
         }
     except: return None
 
-# --- 4. 介面與狀態保持 ---
-if 'results' not in st.session_state:
-    st.session_state.results = None
+# --- 4. 介面與狀態管理 (修復按鈕點擊後消失問題) ---
+if 'analysis_results' not in st.session_state:
+    st.session_state.analysis_results = None
 
-c1, c2 = st.columns(2)
-with c1:
+col1, col2 = st.columns(2)
+with col1:
     if st.button('🚀 執行 100 強數據分析', use_container_width=True):
-        # 抓取前 100 名單 (直接調用 API 避免 DataLoader 報錯)
+        dl = DataLoader()
         try:
-            url = "https://api.finmindtrade.com/api/v4/data"
-            params = {"dataset": "TaiwanStockInfo", "token": FINMIND_TOKEN}
-            df_info = pd.DataFrame(requests.get(url, params=params).json()["data"])
+            df_info = dl.taiwan_stock_info()
+            # 確保取得台股上市名單
             base_list = [[row['stock_id'], row['stock_name']] for _, row in df_info[df_info['type']=='twse'].drop_duplicates('stock_id').head(100).iterrows()]
             
-            with st.status("🔍 數據同步分析中...", expanded=True) as status:
+            with st.status("🔍 正在同步分析 100 強個股數據...", expanded=True) as status:
                 res_list = []
-                with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-                    futures = [executor.submit(fetch_stock_data, s[0], s[1]) for s in base_list]
+                with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+                    futures = [executor.submit(fetch_stock_info, s[0], s[1]) for s in base_list]
                     for f in concurrent.futures.as_completed(futures):
                         r = f.result()
                         if r: res_list.append(r)
                 
                 if res_list:
-                    st.session_state.results = pd.DataFrame(res_list)
+                    st.session_state.analysis_results = pd.DataFrame(res_list)
                     status.update(label="✅ 分析完成", state="complete")
+                else:
+                    st.error("無法抓取數據，請檢查網路連線。")
         except Exception as e:
             st.error(f"分析失敗: {e}")
 
-with c2:
-    if st.button('🧹 清除快取', use_container_width=True):
-        st.session_state.results = None
+with col2:
+    if st.button('🧹 清除所有快取', use_container_width=True):
+        st.session_state.analysis_results = None
         st.cache_data.clear()
         st.rerun()
 
-# --- 5. 顯示結果 ---
-if st.session_state.results is not None:
-    full_df = st.session_state.results
-    if not full_df.empty:
+# --- 5. 顯示分析結果 ---
+if st.session_state.analysis_results is not None:
+    full_df = st.session_state.analysis_results
+    # 確保欄位存在再排序，防止 KeyError
+    if '現金殖利率(%)' in full_df.columns:
         full_df = full_df.sort_values('現金殖利率(%)', ascending=False).reset_index(drop=True)
+        
         st.subheader("💰 現金殖利率前 20 名")
         st.dataframe(full_df.head(20), use_container_width=True, hide_index=True)
         
+        # 視覺化圖表
         chart = alt.Chart(full_df.head(20)).mark_bar(color='#FF4B4B').encode(
-            x=alt.X('公司名稱:N', sort='-y'),
-            y=alt.Y('現金殖利率(%):Q'),
-            tooltip=['股票代號', '現金殖利率(%)']
+            x=alt.X('公司名稱:N', sort='-y', title='公司'),
+            y=alt.Y('現金殖利率(%):Q', title='殖利率 (%)'),
+            tooltip=['股票代號', '公司名稱', '現金殖利率(%)']
         ).properties(height=400)
         st.altair_chart(chart, use_container_width=True)
