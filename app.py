@@ -11,31 +11,35 @@ import altair as alt
 st.set_page_config(page_title="台股精選 100 強監控", layout="wide")
 st.title("📈 台股市值前 100 強財務監控")
 
+# FinMind 金鑰
 FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMy0wNSAwMToyNzoxNiIsInVzZXJfaWQiOiJqYW1lc2FjZTA4IiwiZW1haWwiOiJkaXNwb3J0YWNlQHlhaG9vLmNvbS50dyIsImlwIjoiMjcuMjQwLjE3OC41MCJ9.23luowIBnVWfgnNDoclVYo6nwFWqzEf3zxya81Cnl2A" 
 
-st.write(f"系統狀態：三大法人資訊新增版 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
+st.write(f"系統狀態：三大法人整合除錯版 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
 
-# --- [新功能] 獲取三大法人數據 ---
+# --- 2. [新功能] 獲取每日三大法人數據 ---
 def get_institutional_investor_data():
     dl = DataLoader()
-    dl.login_token(FINMIND_TOKEN)
-    # 抓取最近 3 天的資料確保能拿到最新交易日
+    # 修正：新版 FinMind 不需要 login_token 屬性，直接透過 API 請求或在初始化處理
+    # 若需使用 Token 權限，部分版本是在抓取時帶入，此處採通用安全寫法
+    
     today_str = datetime.now().strftime('%Y-%m-%d')
     start_str = (datetime.now() - timedelta(days=5)).strftime('%Y-%m-%d')
     
     try:
+        # 抓取全市場三大法人買賣超彙總
         df = dl.taiwan_stock_institutional_investors_summary(start_date=start_str, end_date=today_str)
+        
         if not df.empty:
-            # 取最新日期
+            # 取得最新交易日數據
             latest_date = df['date'].max()
             current_df = df[df['date'] == latest_date].copy()
             
-            # 格式化單位 (將原始數據轉為 億)
-            current_df['buy'] = (current_df['buy'] / 100000000).round(0).astype(int)
-            current_df['sell'] = (current_df['sell'] / 100000000).round(0).astype(int)
-            current_df['diff'] = (current_df['diff'] / 100000000).round(0).astype(int)
+            # 數值轉換為「億」，保留兩位小數
+            current_df['buy'] = (current_df['buy'] / 100000000).round(2)
+            current_df['sell'] = (current_df['sell'] / 100000000).round(2)
+            current_df['diff'] = (current_df['diff'] / 100000000).round(2)
             
-            # 重新命名欄位以對應您的圖片格式
+            # 欄位重新命名以符合對照圖
             current_df = current_df.rename(columns={
                 'name': '身分別',
                 'buy': '買進 (億)',
@@ -43,28 +47,32 @@ def get_institutional_investor_data():
                 'diff': '買賣超 (億)'
             })
             return current_df[['身分別', '買進 (億)', '賣出 (億)', '買賣超 (億)']], latest_date
-    except:
-        return None, None
+    except Exception as e:
+        return None, f"錯誤詳情: {e}"
     return None, None
 
-# --- 顯示三大法人區塊 ---
+# --- 顯示三大法人資訊區塊 ---
 st.subheader("📊 每日三大法人買賣超資訊")
-inst_df, data_date = get_institutional_investor_data()
+inst_df, data_info = get_institutional_investor_data()
 
-if inst_df is not None:
-    st.info(f"數據日期：{data_date}")
-    # 使用 Styled DataFrame 標註顏色 (正數紅、負數綠)
-    def color_diff(val):
-        color = 'red' if val > 0 else 'green' if val < 0 else 'black'
-        return f'color: {color}; font-weight: bold'
+if isinstance(inst_df, pd.DataFrame):
+    st.info(f"📅 數據日期：{data_info}")
     
-    st.table(inst_df.style.applymap(color_diff, subset=['買賣超 (億)']))
+    # 建立樣式：正數紅、負數綠
+    def color_diff_value(val):
+        if isinstance(val, (int, float)):
+            color = 'red' if val > 0 else 'green' if val < 0 else 'black'
+            return f'color: {color}; font-weight: bold'
+        return ''
+    
+    # 使用 st.table 呈現靜態表格，較符合圖片感
+    st.table(inst_df.style.applymap(color_diff_value, subset=['買賣超 (億)']))
 else:
-    st.warning("暫時無法取得法人資料，請確認 API 狀態。")
+    st.warning(f"無法取得法人資料。{data_info if data_info else '請確認是否為非交易日。'}")
 
 st.divider()
 
-# --- 2. 核心抓取函數 (原有功能保持不變) ---
+# --- 3. 核心抓取函數 (原有 100 強邏輯) ---
 @st.cache_data(ttl=3600)
 def get_all_stock_data(base_list):
     final_results = []
@@ -128,7 +136,7 @@ def fetch_single_stock(sid, sname):
         }
     except: return None
 
-# --- 3. 獲取名單與 Excel 轉換 (原有功能保持不變) ---
+# --- 4. 獲取名單與 Excel 轉換 ---
 @st.cache_data(ttl=86400)
 def get_top_100_list():
     dl = DataLoader()
@@ -143,7 +151,7 @@ def to_excel(df):
         df.to_excel(writer, index=False, sheet_name='Data')
     return output.getvalue()
 
-# --- 4. 介面主邏輯 (原有功能保持不變) ---
+# --- 5. 介面主邏輯 ---
 if st.button('🚀 執行 100 強數據分析'):
     base_list = get_top_100_list()
     
@@ -174,3 +182,11 @@ if st.button('🚀 執行 100 強數據分析'):
             y=alt.Y('現金殖利率(%):Q', scale=alt.Scale(domain=[0, 15]), title='現金殖利率 (%)'),
             tooltip=['公司名稱', '現金殖利率(%)']
         ).properties(height=400).interactive(bind_y=False)
+        
+        st.altair_chart(chart, use_container_width=True)
+    else:
+        st.error("無法取得分析數據。")
+
+if st.button('🧹 清除快取'):
+    st.cache_data.clear()
+    st.rerun()
