@@ -18,7 +18,7 @@ FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMy0wNS
 def display_institutional_table():
     dl = DataLoader()
     try:
-        # 抓取過去 10 天資料以確保包含最新結算日
+        # 抓取最近 10 天資料以搜尋最新盤後結算日
         df = dl.taiwan_stock_institutional_investors(
             stock_id="", 
             start_date=(datetime.now() - timedelta(days=10)).strftime('%Y-%m-%d')
@@ -27,11 +27,11 @@ def display_institutional_table():
             st.info("💡 目前尚未取得最新盤後法人統計數據。")
             return
         
-        # 取得最新交易日數據
+        # 取得最新一筆交易日
         latest_date = df['date'].max()
         df_latest = df[df['date'] == latest_date].copy()
         
-        # 定義中文名稱對照
+        # 中文名稱映射
         name_map = {
             'Foreign_Investor': '外資及陸資',
             'Investment_Trust': '投信',
@@ -40,13 +40,14 @@ def display_institutional_table():
             'Foreign_Dealer_Self': '外資自營商'
         }
         
+        # 整理表格數據
+        df_latest['法人項目'] = df_latest['name'].map(name_map)
         df_latest['買進(億)'] = (df_latest['buy'] / 10**8).round(1)
         df_latest['賣出(億)'] = (df_latest['sell'] / 10**8).round(1)
         df_latest['買賣超(億)'] = df_latest['買進(億)'] - df_latest['賣出(億)']
-        df_latest['法人項目'] = df_latest['name'].map(name_map)
         
-        final_table = df_latest.dropna(subset=['法人項目'])
-        final_table = final_table[['法人項目', '買進(億)', '賣出(億)', '買賣超(億)']]
+        # 呈現最終表格
+        final_table = df_latest.dropna(subset=['法人項目'])[['法人項目', '買進(億)', '賣出(億)', '買賣超(億)']]
         
         st.subheader(f"🏛️ 三大法人盤後買賣超統計表 ({latest_date})")
         
@@ -86,6 +87,7 @@ def fetch_single_stock(sid, sname):
         curr_price = info.get('currentPrice') or info.get('regularMarketPrice', 0)
         if curr_price == 0: return None
 
+        # 殖利率與配息
         div_history = stock.dividends
         if not div_history.empty:
             last_year_divs = div_history[div_history.index.tz_localize(None) >= (datetime.now() - timedelta(days=365))]
@@ -94,6 +96,7 @@ def fetch_single_stock(sid, sname):
             cash_div = 0.0
         calc_yield = round((cash_div / curr_price * 100), 1) if cash_div > 0 else 0.0
 
+        # EPS 歷史數據
         eps_q0, eps_q1, eps_q2 = 0.0, 0.0, 0.0
         q_fin = stock.quarterly_financials
         if not q_fin.empty and 'Diluted EPS' in q_fin.index:
@@ -109,38 +112,3 @@ def fetch_single_stock(sid, sname):
             '更新日期': datetime.now().strftime('%Y-%m-%d')
         }
     except Exception: return None
-
-# --- 4. 名單與 Excel 邏輯 ---
-@st.cache_data(ttl=86400)
-def get_top_100_list():
-    dl = DataLoader()
-    # 修正：移除 dl.login，改直接去重
-    df_info = dl.taiwan_stock_info()
-    df_info = df_info[df_info['type'] == 'twse'].drop_duplicates(subset=['stock_id'])
-    return [[row['stock_id'], row['stock_name']] for _, row in df_info.head(100).iterrows()]
-
-def to_excel(df):
-    output = io.BytesIO()
-    # 修正：使用 openpyxl 避免 xlsxwriter 缺失錯誤
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='Data')
-    return output.getvalue()
-
-# --- 5. 介面操作區 ---
-if st.button('🚀 執行 100 強全方位掃描'):
-    base_list = get_top_100_list()
-    with st.status("🔍 正在分析台股市值前 100 大個股財報...", expanded=True) as status:
-        full_df = get_all_stock_data(base_list)
-        status.update(label="✅ 分析完成！", state="complete")
-    
-    if not full_df.empty:
-        # 修正：去重確保一零四不重複出現
-        full_df = full_df.drop_duplicates(subset=['股票代號']).sort_values(by='現金殖利率(%)', ascending=False)
-        
-        file_timestamp = datetime.now().strftime('%Y%m%d')
-        # 修正：確保檔名字串正確閉合
-        st.download_button(
-            label="📥 下載完整 100 強個股財報 Excel",
-            data=to_excel(full_df),
-            file_name=f"Taiwan_Top100_{file_timestamp}.xlsx",
-            mime="application/
