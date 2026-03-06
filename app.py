@@ -5,6 +5,7 @@ from FinMind.data import DataLoader
 from datetime import datetime, timedelta
 import concurrent.futures
 import io
+import altair as alt  # 新增：用於精確控制圖表
 
 # --- 1. 網頁基本設定 ---
 st.set_page_config(page_title="台股精選 100 強監控", layout="wide")
@@ -13,7 +14,7 @@ st.title("📈 台股市值前 100 強財務監控")
 # 已填入您的 FinMind 金鑰
 FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMy0wNSAwMToyNzoxNiIsInVzZXJfaWQiOiJqYW1lc2FjZTA4IiwiZW1haWwiOiJkaXNwb3J0YWNlQHlhaG9vLmNvbS50dyIsImlwIjoiMjcuMjQwLjE3OC41MCJ9.23luowIBnVWfgnNDoclVYo6nwFWqzEf3zxya81Cnl2A" 
 
-st.write(f"系統狀態：穩定執行版 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
+st.write(f"系統狀態：圖表座標除錯與座標軸固定版 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
 
 # --- 2. 核心抓取函數 ---
 @st.cache_data(ttl=3600)
@@ -29,7 +30,6 @@ def get_all_stock_data(base_list):
 def fetch_single_stock(sid, sname):
     clean_id = str(sid)
     full_sid = f"{clean_id}.TW"
-    # 初始化 DataLoader 時直接帶入 Token (若 API 支援)
     dl = DataLoader()
     
     try:
@@ -93,7 +93,6 @@ def get_top_100_list():
 
 def to_excel(df):
     output = io.BytesIO()
-    # 修正：改用 openpyxl 引擎，避免 xlsxwriter 缺失問題
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Data')
     return output.getvalue()
@@ -109,7 +108,7 @@ if st.button('🚀 執行 100 強數據分析'):
     if not full_df.empty:
         full_df = full_df.sort_values(by='現金殖利率(%)', ascending=False)
         
-        # 下載按鈕 (優先顯示)
+        # 下載按鈕
         st.download_button(
             label="📥 下載完整 100 強個股財報 Excel",
             data=to_excel(full_df),
@@ -119,10 +118,29 @@ if st.button('🚀 執行 100 強數據分析'):
         
         # 顯示前 20
         st.subheader("💰 現金殖利率前 20 名")
-        st.dataframe(full_df.head(20), use_container_width=True, hide_index=True)
+        display_df = full_df.head(20).reset_index(drop=True)
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
         
-        # 圖表
-        st.bar_chart(full_df.head(20).set_index('公司名稱')[['現金殖利率(%)']])
+        # --- 除錯與優化後的長條圖 ---
+        st.divider()
+        st.subheader("📊 前 20 名殖利率視覺化 (座標軸已固定)")
+        
+        # 使用 Altair 建構精確的長條圖
+        # x 軸：公司名稱 (照殖利率排序)
+        # y 軸：現金殖利率(%)，固定範圍 [0, 15]
+        chart = alt.Chart(display_df).mark_bar(color='#FF4B4B').encode(
+            x=alt.X('公司名稱:N', sort='-y', title='公司名稱'),
+            y=alt.Y('現金殖利率(%):Q', scale=alt.Scale(domain=[0, 15]), title='現金殖利率 (%)'),
+            tooltip=['公司名稱', '現金殖利率(%)']
+        ).properties(
+            width=800,
+            height=400
+        ).configure_view(
+            strokeWidth=0 # 移除邊框
+        ).interactive(bind_y=False) # 禁用 Y 軸縮放
+        
+        st.altair_chart(chart, use_container_width=True)
+        
     else:
         st.error("無法取得數據，請確認連線。")
 
