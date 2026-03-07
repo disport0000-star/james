@@ -5,22 +5,22 @@ from FinMind.data import DataLoader
 from datetime import datetime, timedelta
 import concurrent.futures
 import io
-import altair as alt  # 新增：用於精確控制圖表
+import altair as alt
 
 # --- 1. 網頁基本設定 ---
 st.set_page_config(page_title="台股精選 100 強監控", layout="wide")
 st.title("📈 台股市值前 100 強財務監控")
 
-# 已填入您的 FinMind 金鑰
-FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMy0wNSAwMToyNzoxNiIsInVzZXJfaWQiOiJqYW1lc2FjZTA4IiwiZW1haWwiOiJkaXNwb3J0YWNlQHlhaG9vLmNvbS50dyIsImlwIjoiMjcuMjQwLjE3OC41MCJ9.23luowIBnVWfgnNDoclVYo6nwFWqzEf3zxya81Cnl2A" 
+# 建議將金鑰妥善保管
+FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMy0wNSAwMToyNzoxNiIsInVzZXJfaWQiOiJqYW1lc2FjZTA4IiwiZW1haWwiOiJkaXNwb3J0YWNlQHlhaG9vLmNvbS50dyIsImlwIjoiMjcuMjQwLjE3OC41MCJ9.23luowIBnVWfgnNDoclVYo6nwFWqzEf3zxya81Cnl2A"
 
-st.write(f"系統狀態：圖表座標除錯與座標軸固定版 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
+st.write(f"系統狀態：三期營收對比強化版 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
 
 # --- 2. 核心抓取函數 ---
 @st.cache_data(ttl=3600)
 def get_all_stock_data(base_list):
     final_results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         futures = [executor.submit(fetch_single_stock, s[0], s[1]) for s in base_list]
         for future in concurrent.futures.as_completed(futures):
             res = future.result()
@@ -31,6 +31,7 @@ def fetch_single_stock(sid, sname):
     clean_id = str(sid)
     full_sid = f"{clean_id}.TW"
     dl = DataLoader()
+    dl.login(token=FINMIND_TOKEN)
     
     try:
         stock = yf.Ticker(full_sid)
@@ -38,7 +39,7 @@ def fetch_single_stock(sid, sname):
         curr_price = info.get('currentPrice') or info.get('regularMarketPrice', 0)
         if curr_price == 0: return None
 
-        # 配息資料
+        # 配息資料處理
         div_history = stock.dividends
         if not div_history.empty:
             last_year_divs = div_history[div_history.index.tz_localize(None) >= (datetime.now() - timedelta(days=365))]
@@ -49,7 +50,7 @@ def fetch_single_stock(sid, sname):
         stock_div = info.get('stockDividendValue', 0.0) or 0.0
         calc_yield = round((cash_div / curr_price * 100), 1) if cash_div > 0 else 0.0
 
-        # EPS 資料
+        # EPS 資料處理
         eps_q0, eps_q1, eps_q2 = 0.0, 0.0, 0.0
         q_fin = stock.quarterly_financials
         if not q_fin.empty and 'Diluted EPS' in q_fin.index:
@@ -60,22 +61,35 @@ def fetch_single_stock(sid, sname):
         else:
             eps_q0 = round(info.get('trailingEps', 0), 2)
 
-        # 營收與毛利
-        rev_m0, r_growth = "", ""
+        # 營收處理：抓取過去 120 天以確保有三期數據
+        rev_m0, rev_m1, rev_m2, r_growth = "", "", "", ""
         try:
-            df_rev = dl.taiwan_stock_month_revenue(stock_id=clean_id, start_date=(datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d'))
+            df_rev = dl.taiwan_stock_month_revenue(
+                stock_id=clean_id, 
+                start_date=(datetime.now() - timedelta(days=120)).strftime('%Y-%m-%d')
+            )
             if not df_rev.empty:
                 df_rev = df_rev.sort_values('date', ascending=False)
+                # 最新一期
                 rev_m0 = f"{round(df_rev.iloc[0]['revenue'] / 1000):,.0f}"
-                r0, r1 = df_rev.iloc[0]['revenue'], df_rev.iloc[1]['revenue']
-                r_growth = f"{round(((r0-r1)/r1)*100, 1)}%" if r1 != 0 else ""
+                # 上一期
+                if len(df_rev) >= 2:
+                    rev_m1 = f"{round(df_rev.iloc[1]['revenue'] / 1000):,.0f}"
+                    r0, r1 = df_rev.iloc[0]['revenue'], df_rev.iloc[1]['revenue']
+                    r_growth = f"{round(((r0-r1)/r1)*100, 1)}%" if r1 != 0 else ""
+                # 上上期
+                if len(df_rev) >= 3:
+                    rev_m2 = f"{round(df_rev.iloc[2]['revenue'] / 1000):,.0f}"
         except: pass
 
         return {
             '股票代號': clean_id, '公司名稱': sname, '目前股價': curr_price,
             '現金殖利率(%)': calc_yield, '現金股利': cash_div, '股票股利': stock_div,
             '最新季EPS': eps_q0, '上一季EPS': eps_q1, '上上一季EPS': eps_q2,
-            '最新一期營收(千元)': rev_m0, '與上月比較增減(%)': r_growth,
+            '最新一期營收(千元)': rev_m0, 
+            '上一期營收(千元)': rev_m1, 
+            '上上一期營收(千元)': rev_m2,
+            '與上月比較增減(%)': r_growth,
             '毛利率(%)': round(info.get('grossMargins', 0) * 100, 1),
             '營業利益率(%)': round(info.get('operatingMargins', 0) * 100, 1),
             '稅後淨利率(%)': round(info.get('profitMargins', 0) * 100, 1),
@@ -87,9 +101,12 @@ def fetch_single_stock(sid, sname):
 @st.cache_data(ttl=86400)
 def get_top_100_list():
     dl = DataLoader()
-    df_info = dl.taiwan_stock_info()
-    df_info = df_info[df_info['type'] == 'twse']
-    return [[row['stock_id'], row['stock_name']] for _, row in df_info.head(100).iterrows()]
+    dl.login(token=FINMIND_TOKEN)
+    try:
+        df_info = dl.taiwan_stock_info()
+        df_info = df_info[df_info['type'] == 'twse']
+        return [[row['stock_id'], row['stock_name']] for _, row in df_info.head(100).iterrows()]
+    except: return []
 
 def to_excel(df):
     output = io.BytesIO()
@@ -100,15 +117,15 @@ def to_excel(df):
 # --- 4. 介面主邏輯 ---
 if st.button('🚀 執行 100 強數據分析'):
     base_list = get_top_100_list()
-    
-    with st.status("🔍 正在分析台股市值前 100 大個股...", expanded=True) as status:
+    if not base_list: st.stop()
+
+    with st.status("🔍 正在分析台股財報數據 (包含三期營收對比)...", expanded=True) as status:
         full_df = get_all_stock_data(base_list)
         status.update(label="✅ 分析完成！", state="complete")
     
     if not full_df.empty:
         full_df = full_df.sort_values(by='現金殖利率(%)', ascending=False)
         
-        # 下載按鈕
         st.download_button(
             label="📥 下載完整 100 強個股財報 Excel",
             data=to_excel(full_df),
@@ -116,34 +133,12 @@ if st.button('🚀 執行 100 強數據分析'):
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
         
-        # 顯示前 20
-        st.subheader("💰 現金殖利率前 20 名")
+        st.subheader("💰 現金殖利率前 20 名 (含營收與 EPS 趨勢)")
         display_df = full_df.head(20).reset_index(drop=True)
         st.dataframe(display_df, use_container_width=True, hide_index=True)
         
-        # --- 除錯與優化後的長條圖 ---
+        # --- 視覺化圖表 ---
         st.divider()
-        st.subheader("📊 前 20 名殖利率視覺化 (座標軸已固定)")
-        
-        # 使用 Altair 建構精確的長條圖
-        # x 軸：公司名稱 (照殖利率排序)
-        # y 軸：現金殖利率(%)，固定範圍 [0, 15]
-        chart = alt.Chart(display_df).mark_bar(color='#FF4B4B').encode(
-            x=alt.X('公司名稱:N', sort='-y', title='公司名稱'),
-            y=alt.Y('現金殖利率(%):Q', scale=alt.Scale(domain=[0, 15]), title='現金殖利率 (%)'),
-            tooltip=['公司名稱', '現金殖利率(%)']
-        ).properties(
-            width=800,
-            height=400
-        ).configure_view(
-            strokeWidth=0 # 移除邊框
-        ).interactive(bind_y=False) # 禁用 Y 軸縮放
-        
-        st.altair_chart(chart, use_container_width=True)
-        
-    else:
-        st.error("無法取得數據，請確認連線。")
-
-if st.button('🧹 清除快取'):
-    st.cache_data.clear()
-    st.rerun()
+        st.subheader("📊 前 20 名殖利率視覺化")
+        display_df['現金殖利率(%)'] = pd.to_numeric(display_df['現金殖利率(%)'], errors='coerce')
+        chart = alt.Chart(display_df).mark_bar(color='#FF4B4B').
