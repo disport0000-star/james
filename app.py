@@ -14,7 +14,7 @@ st.title("📈 台股市值前 100 強財務監控")
 # 您的 FinMind 金鑰
 FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMy0wNyAxNTowNToyNiIsInVzZXJfaWQiOiJqYW1lc2FjZTA4IiwiZW1haWwiOiJkaXNwb3J0YWNlQHlhaG9vLmNvbS50dyIsImlwIjoiMTExLjI1NS4xMTAuNDkifQ.FLkCVK6j0S6TfgAI-_hAhaa3i11pmwlntZZP2X1RiIs"
 
-st.write(f"系統狀態：語法與縮排嚴謹修正版 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
+st.write(f"系統狀態：語法與防錯終極修正版 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
 
 # --- 2. 核心抓取函數 ---
 @st.cache_data(ttl=3600)
@@ -55,7 +55,7 @@ def fetch_single_stock(sid, sname):
         else:
             calc_yield = 0.0
 
-        # EPS 處理 (Yahoo Finance) - 將縮排展開確保安全
+        # EPS 處理 (Yahoo Finance)
         eps_q0 = 0.0
         eps_q1 = 0.0
         eps_q2 = 0.0
@@ -157,4 +157,42 @@ if st.button('🚀 啟動 100 強數據分析'):
         st.error("目前無法獲取股票名單，請稍後再試。")
     else:
         with st.status("🔍 正在抓取個股財務數據...", expanded=True) as status:
-            full
+            full_df = get_all_stock_data_v2(base_list)
+            status.update(label="✅ 分析完成！", state="complete")
+        
+        if not full_df.empty:
+            full_df = full_df.drop_duplicates(subset=['股票代號'])
+            full_df = full_df.sort_values(by='現金殖利率(%)', ascending=False)
+            
+            # 下載按鈕
+            st.download_button(
+                label="📥 下載完整 100 強個股財報 Excel",
+                data=to_excel(full_df),
+                file_name=f"Taiwan_Top100_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            
+            # 顯示數據
+            st.subheader("💰 現金殖利率前 20 名")
+            display_df = full_df.head(20).reset_index(drop=True)
+            st.dataframe(display_df, use_container_width=True, hide_index=True)
+            
+            # 視覺化
+            st.divider()
+            st.subheader("📊 殖利率分佈視覺化")
+            chart = alt.Chart(display_df).mark_bar(color='#FF4B4B').encode(
+                x=alt.X('公司名稱:N', sort='-y', title='公司名稱'),
+                y=alt.Y('現金殖利率(%):Q', title='現金殖利率 (%)'),
+                tooltip=['公司名稱', '現金殖利率(%)', '目前股價']
+            ).properties(height=400).interactive(bind_y=False)
+            
+            st.altair_chart(chart, use_container_width=True)
+        else:
+            st.error("分析結果為空，請確認 API 連線狀態。")
+
+# 側邊欄
+with st.sidebar:
+    st.info("若出現 KeyError，通常是 API 配額用盡或伺服器超載。")
+    if st.button('🧹 清除快取並重啟'):
+        st.cache_data.clear()
+        st.rerun()
