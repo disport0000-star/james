@@ -15,7 +15,7 @@ st.title("📈 台股市值前 100 強財務監控")
 # 您更新後的 FinMind 金鑰
 FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMy0wNyAxNTowNToyNiIsInVzZXJfaWQiOiJqYW1lc2FjZTA4IiwiZW1haWwiOiJkaXNwb3J0YWNlQHlhaG9vLmNvbS50dyIsImlwIjoiMTExLjI1NS4xMTAuNDkifQ.FLkCVK6j0S6TfgAI-_hAhaa3i11pmwlntZZP2X1RiIs"
 
-st.write(f"系統狀態：金鑰更新與除重優化版 (最後檢查時間: {datetime.now().strftime('%H:%M:%S')})")
+st.write(f"系統狀態：新增歷史營收與EPS欄位版 (最後檢查時間: {datetime.now().strftime('%H:%M:%S')})")
 
 # --- 2. 核心抓取函數 ---
 @st.cache_data(ttl=3600)
@@ -62,28 +62,34 @@ def fetch_single_stock(sid, sname):
         else:
             eps_q0 = round(info.get('trailingEps', 0), 2)
 
-        # 營收處理 (FinMind) - 加入例外捕捉防止 KeyError
-        rev_m0, r_growth = "N/A", "N/A"
+        # 營收處理 (FinMind) - 將時間拉長到 120 天，確保能取得近三個月資料
+        rev_m0, rev_m1, rev_m2, r_growth = "N/A", "N/A", "N/A", "N/A"
         try:
             df_rev = dl.taiwan_stock_month_revenue(
                 stock_id=clean_id, 
-                start_date=(datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d')
+                start_date=(datetime.now() - timedelta(days=120)).strftime('%Y-%m-%d')
             )
             if df_rev is not None and not df_rev.empty:
                 df_rev = df_rev.sort_values('date', ascending=False)
-                rev_m0 = f"{round(df_rev.iloc[0]['revenue'] / 1000):,.0f}"
+                if len(df_rev) > 0: 
+                    rev_m0 = f"{round(df_rev.iloc[0]['revenue'] / 1000):,.0f}"
                 if len(df_rev) > 1:
                     r0, r1 = df_rev.iloc[0]['revenue'], df_rev.iloc[1]['revenue']
+                    rev_m1 = f"{round(r1 / 1000):,.0f}"
                     r_growth = f"{round(((r0-r1)/r1)*100, 1)}%" if r1 != 0 else "0%"
+                if len(df_rev) > 2:
+                    rev_m2 = f"{round(df_rev.iloc[2]['revenue'] / 1000):,.0f}"
         except: pass
 
+        # 整理最終輸出的欄位順序
         return {
             '股票代號': clean_id, '公司名稱': sname, '目前股價': curr_price,
             '現金殖利率(%)': calc_yield, '現金股利': cash_div,
-            '最新季EPS': eps_q0, '上一季EPS': eps_q1,
-            '最新一期營收(千元)': rev_m0, '與上月比較增減(%)': r_growth,
-            '毛利率(%)': round(info.get('grossMargins', 0) * 100, 1),
-            '稅後淨利率(%)': round(info.get('profitMargins', 0) * 100, 1),
+            '最新季EPS': eps_q0, '上一季EPS': eps_q1, '上上一季EPS': eps_q2,
+            '最新一期營收(千元)': rev_m0, '上一期營收(千元)': rev_m1, '上上一期營收(千元)': rev_m2, 
+            '與上月比較增減(%)': r_growth,
+            '毛利率(%)': round((info.get('grossMargins') or 0) * 100, 1),
+            '稅後淨利率(%)': round((info.get('profitMargins') or 0) * 100, 1),
             '更新日期': datetime.now().strftime('%Y-%m-%d')
         }
     except Exception: return None
@@ -102,7 +108,7 @@ def get_top_100_list():
             return []
             
         df_info = df_info[df_info['type'] == 'twse']
-        # 【修改處 1】：在產生清單前，先剃除重複的股票代號
+        # 在產生清單前，先剃除重複的股票代號
         df_info = df_info.drop_duplicates(subset=['stock_id'])
         
         return [[row['stock_id'], row['stock_name']] for _, row in df_info.head(100).iterrows()]
@@ -128,7 +134,7 @@ if st.button('🚀 啟動 100 強數據分析'):
             status.update(label="✅ 分析完成！", state="complete")
         
         if not full_df.empty:
-            # 【修改處 2】：在最終 DataFrame 再次確認沒有重複的股票代號
+            # 在最終 DataFrame 再次確認沒有重複的股票代號
             full_df = full_df.drop_duplicates(subset=['股票代號'])
             
             full_df = full_df.sort_values(by='現金殖利率(%)', ascending=False)
