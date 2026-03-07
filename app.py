@@ -5,7 +5,7 @@ from FinMind.data import DataLoader
 from datetime import datetime, timedelta
 import concurrent.futures
 import io
-import altair as alt  # 新增：用於精確控制圖表
+import altair as alt
 
 # --- 1. 網頁基本設定 ---
 st.set_page_config(page_title="台股精選 100 強監控", layout="wide")
@@ -14,7 +14,7 @@ st.title("📈 台股市值前 100 強財務監控")
 # 已填入您的 FinMind 金鑰
 FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMy0wNSAwMToyNzoxNiIsInVzZXJfaWQiOiJqYW1lc2FjZTA4IiwiZW1haWwiOiJkaXNwb3J0YWNlQHlhaG9vLmNvbS50dyIsImlwIjoiMjcuMjQwLjE3OC41MCJ9.23luowIBnVWfgnNDoclVYo6nwFWqzEf3zxya81Cnl2A" 
 
-st.write(f"系統狀態：圖表座標除錯與座標軸固定版 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
+st.write(f"系統狀態：名單去重與圖表優化版 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
 
 # --- 2. 核心抓取函數 ---
 @st.cache_data(ttl=3600)
@@ -89,6 +89,8 @@ def get_top_100_list():
     dl = DataLoader()
     df_info = dl.taiwan_stock_info()
     df_info = df_info[df_info['type'] == 'twse']
+    # 修正：在取前 100 支前，先根據 stock_id 去除重複項
+    df_info = df_info.drop_duplicates(subset=['stock_id'])
     return [[row['stock_id'], row['stock_name']] for _, row in df_info.head(100).iterrows()]
 
 def to_excel(df):
@@ -101,11 +103,13 @@ def to_excel(df):
 if st.button('🚀 執行 100 強數據分析'):
     base_list = get_top_100_list()
     
-    with st.status("🔍 正在分析台股市值前 100 大個股...", expanded=True) as status:
+    with st.status("🔍 正在分析台股市值前 100 大個股 (已自動過濾重複)...", expanded=True) as status:
         full_df = get_all_stock_data(base_list)
         status.update(label="✅ 分析完成！", state="complete")
     
     if not full_df.empty:
+        # 去除分析結果中可能因為 yfinance 抓取邏輯導致的重複
+        full_df = full_df.drop_duplicates(subset=['股票代號'])
         full_df = full_df.sort_values(by='現金殖利率(%)', ascending=False)
         
         # 下載按鈕
@@ -121,23 +125,17 @@ if st.button('🚀 執行 100 強數據分析'):
         display_df = full_df.head(20).reset_index(drop=True)
         st.dataframe(display_df, use_container_width=True, hide_index=True)
         
-        # --- 除錯與優化後的長條圖 ---
+        # 長條圖
         st.divider()
-        st.subheader("📊 前 20 名殖利率視覺化 (座標軸已固定)")
+        st.subheader("📊 前 20 名殖利率視覺化 (座標軸固定且去重)")
         
-        # 使用 Altair 建構精確的長條圖
-        # x 軸：公司名稱 (照殖利率排序)
-        # y 軸：現金殖利率(%)，固定範圍 [0, 15]
         chart = alt.Chart(display_df).mark_bar(color='#FF4B4B').encode(
             x=alt.X('公司名稱:N', sort='-y', title='公司名稱'),
             y=alt.Y('現金殖利率(%):Q', scale=alt.Scale(domain=[0, 15]), title='現金殖利率 (%)'),
             tooltip=['公司名稱', '現金殖利率(%)']
         ).properties(
-            width=800,
             height=400
-        ).configure_view(
-            strokeWidth=0 # 移除邊框
-        ).interactive(bind_y=False) # 禁用 Y 軸縮放
+        ).interactive(bind_y=False)
         
         st.altair_chart(chart, use_container_width=True)
         
