@@ -15,7 +15,7 @@ st.title("📈 台股市值前 100 強財務監控")
 # 您更新後的 FinMind 金鑰
 FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMy0wNyAxNTowNToyNiIsInVzZXJfaWQiOiJqYW1lc2FjZTA4IiwiZW1haWwiOiJkaXNwb3J0YWNlQHlhaG9vLmNvbS50dyIsImlwIjoiMTExLjI1NS4xMTAuNDkifQ.FLkCVK6j0S6TfgAI-_hAhaa3i11pmwlntZZP2X1RiIs"
 
-st.write(f"系統狀態：金鑰更新與防錯強化版 (最後檢查時間: {datetime.now().strftime('%H:%M:%S')})")
+st.write(f"系統狀態：金鑰更新與除重優化版 (最後檢查時間: {datetime.now().strftime('%H:%M:%S')})")
 
 # --- 2. 核心抓取函數 ---
 @st.cache_data(ttl=3600)
@@ -102,6 +102,9 @@ def get_top_100_list():
             return []
             
         df_info = df_info[df_info['type'] == 'twse']
+        # 【修改處 1】：在產生清單前，先剃除重複的股票代號
+        df_info = df_info.drop_duplicates(subset=['stock_id'])
+        
         return [[row['stock_id'], row['stock_name']] for _, row in df_info.head(100).iterrows()]
     except Exception as e:
         st.error(f"❌ 獲取清單時發生錯誤: {e}")
@@ -125,6 +128,9 @@ if st.button('🚀 啟動 100 強數據分析'):
             status.update(label="✅ 分析完成！", state="complete")
         
         if not full_df.empty:
+            # 【修改處 2】：在最終 DataFrame 再次確認沒有重複的股票代號
+            full_df = full_df.drop_duplicates(subset=['股票代號'])
+            
             full_df = full_df.sort_values(by='現金殖利率(%)', ascending=False)
             
             # 下載按鈕
