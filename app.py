@@ -139,4 +139,35 @@ if st.button('🚀 執行 100 強數據分析'):
         )
         
         st.subheader("💰 現金殖利率前 20 名 (含三期營收對比)")
-        display_df =
+        display_df = full_df.head(20).reset_index(drop=True)
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
+        
+        # --- 5. 視覺化圖表 (修正 SyntaxError) ---
+        st.divider()
+        st.subheader("📊 前 20 名殖利率分佈")
+        
+        display_df['現金殖利率(%)'] = pd.to_numeric(display_df['現金殖利率(%)'], errors='coerce')
+        
+        # 修正圖表語法連結
+        chart = alt.Chart(display_df).mark_bar(
+            color='#FF4B4B',
+            cornerRadiusTopLeft=3,
+            cornerRadiusTopRight=3
+        ).encode(
+            x=alt.X('公司名稱:N', sort='-y', title='公司名稱', axis=alt.Axis(labelAngle=-45)),
+            y=alt.Y('現金殖利率(%):Q', title='現金殖利率 (%)'),
+            tooltip=['股票代號', '公司名稱', '現金殖利率(%)', '最新一期營收(千元)']
+        ).properties(
+            height=400
+        ).configure_view(
+            strokeWidth=0
+        )
+        
+        st.altair_chart(chart, use_container_width=True)
+        
+    else:
+        st.error("未能成功抓取數據，請稍後再試。")
+
+if st.button('🧹 清除快取'):
+    st.cache_data.clear()
+    st.rerun()
