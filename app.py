@@ -14,7 +14,7 @@ st.title("📈 台股市值前 100 強財務監控")
 # 您的 FinMind 金鑰
 FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMy0wNyAxNTowNToyNiIsInVzZXJfaWQiOiJqYW1lc2FjZTA4IiwiZW1haWwiOiJkaXNwb3J0YWNlQHlhaG9vLmNvbS50dyIsImlwIjoiMTExLjI1NS4xMTAuNDkifQ.FLkCVK6j0S6TfgAI-_hAhaa3i11pmwlntZZP2X1RiIs"
 
-st.write(f"系統狀態：修正 Excel 下載數量版 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
+st.write(f"系統狀態：網頁 40 強與 Excel 100 強優化版 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
 
 # --- 2. 核心抓取函數 ---
 @st.cache_data(ttl=3600)
@@ -164,23 +164,40 @@ if st.button('🚀 啟動 100 強數據分析'):
             full_df = full_df.drop_duplicates(subset=['股票代號'])
             full_df = full_df.sort_values(by='現金殖利率(%)', ascending=False)
             
-            # 【新增】顯示實際成功抓取的總數量，讓您一目了然
+            # 【優化 2】：確保 Excel 檔案為前 100 強 (最多 100 筆)
+            excel_df = full_df.head(100)
+            
             st.success(f"✅ 本次成功分析並獲取 {len(full_df)} 檔股票資料！")
             
-            # 下載按鈕 (確保丟進去的是 full_df)
+            # 下載按鈕 (丟進去的是 excel_df)
             st.download_button(
-                label=f"📥 下載完整 {len(full_df)} 強個股財報 Excel",
-                data=to_excel(full_df),
+                label=f"📥 下載完整前 {len(excel_df)} 強個股財報 Excel",
+                data=to_excel(excel_df),
                 file_name=f"Taiwan_Top100_{datetime.now().strftime('%Y%m%d')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
             
-            # 顯示數據 (網頁上只顯示前 20 名)
-            st.subheader("💰 現金殖利率前 20 名")
-            display_df = full_df.head(20).reset_index(drop=True)
+            # 【優化 1】：顯示數據 (網頁上改顯示前 40 名)
+            st.subheader("💰 現金殖利率前 40 名")
+            display_df = full_df.head(40).reset_index(drop=True)
             st.dataframe(display_df, use_container_width=True, hide_index=True)
             
-            # 視覺化
+            # 視覺化同步變更為 40 名
             st.divider()
-            st.subheader("📊 殖利率分佈視覺化")
-            chart = alt.Chart(display_df).mark
+            st.subheader("📊 前 40 名殖利率分佈視覺化")
+            chart = alt.Chart(display_df).mark_bar(color='#FF4B4B').encode(
+                x=alt.X('公司名稱:N', sort='-y', title='公司名稱'),
+                y=alt.Y('現金殖利率(%):Q', title='現金殖利率 (%)'),
+                tooltip=['公司名稱', '現金殖利率(%)', '目前股價']
+            ).properties(height=400).interactive(bind_y=False)
+            
+            st.altair_chart(chart, use_container_width=True)
+        else:
+            st.error("分析結果為空，請確認 API 連線狀態。")
+
+# 側邊欄
+with st.sidebar:
+    st.info("若出現 KeyError，通常是 API 配額用盡或伺服器超載。")
+    if st.button('🧹 清除快取並重啟'):
+        st.cache_data.clear()
+        st.rerun()
