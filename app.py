@@ -14,13 +14,13 @@ st.title("📈 台股市值前 100 強財務監控")
 # FinMind API Token
 FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMy0wNSAwMToyNzoxNiIsInVzZXJfaWQiOiJqYW1lc2FjZTA4IiwiZW1haWwiOiJkaXNwb3J0YWNlQHlhaG9vLmNvbS50dyIsImlwIjoiMjcuMjQwLjE3OC41MCJ9.23luowIBnVWfgnNDoclVYo6nwFWqzEf3zxya81Cnl2A"
 
-st.write(f"系統狀態：三期營收欄位新增與語法除錯版 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
+st.write(f"系統狀態：相容性修正與三期營收版 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
 
 # --- 2. 核心抓取函數 ---
 @st.cache_data(ttl=3600)
 def get_all_stock_data(base_list):
     final_results = []
-    # 使用 ThreadPoolExecutor 平行處理（上限 10 以防被 yfinance 阻擋）
+    # 使用 ThreadPoolExecutor 平行處理
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         futures = [executor.submit(fetch_single_stock, s[0], s[1]) for s in base_list]
         for future in concurrent.futures.as_completed(futures):
@@ -31,8 +31,11 @@ def get_all_stock_data(base_list):
 def fetch_single_stock(sid, sname):
     clean_id = str(sid)
     full_sid = f"{clean_id}.TW"
+    
+    # 修正：針對不同版本的 FinMind 進行相容性處理
     dl = DataLoader()
-    dl.login(token=FINMIND_TOKEN) # 修正 KeyError: 必須登入以獲取權限
+    if hasattr(dl, 'login'):
+        dl.login(token=FINMIND_TOKEN)
     
     try:
         stock = yf.Ticker(full_sid)
@@ -65,22 +68,24 @@ def fetch_single_stock(sid, sname):
         # --- 營收數據 (三期對比) ---
         rev_m0, rev_m1, rev_m2, r_growth = "", "", "", ""
         try:
-            # 抓取過去 120 天以包含至少三個月營收
+            # 抓取過去 120 天以包含三個月營收
+            # 若版本不支援 login，則直接調用（FinMind 某些版本不強制 token 亦可抓取基本數據）
             df_rev = dl.taiwan_stock_month_revenue(
                 stock_id=clean_id, 
                 start_date=(datetime.now() - timedelta(days=120)).strftime('%Y-%m-%d')
             )
             if not df_rev.empty:
                 df_rev = df_rev.sort_values('date', ascending=False)
-                rev_m0 = f"{round(df_rev.iloc[0]['revenue'] / 1000):,.0f}" # 最新一期
-                
+                # 最新一期
+                rev_m0 = f"{round(df_rev.iloc[0]['revenue'] / 1000):,.0f}" 
+                # 上一期
                 if len(df_rev) >= 2:
-                    rev_m1 = f"{round(df_rev.iloc[1]['revenue'] / 1000):,.0f}" # 上一期
+                    rev_m1 = f"{round(df_rev.iloc[1]['revenue'] / 1000):,.0f}" 
                     r0, r1 = df_rev.iloc[0]['revenue'], df_rev.iloc[1]['revenue']
                     r_growth = f"{round(((r0-r1)/r1)*100, 1)}%" if r1 != 0 else ""
-                
+                # 上上期
                 if len(df_rev) >= 3:
-                    rev_m2 = f"{round(df_rev.iloc[2]['revenue'] / 1000):,.0f}" # 上上一期
+                    rev_m2 = f"{round(df_rev.iloc[2]['revenue'] / 1000):,.0f}" 
         except: pass
 
         return {
@@ -102,7 +107,8 @@ def fetch_single_stock(sid, sname):
 @st.cache_data(ttl=86400)
 def get_top_100_list():
     dl = DataLoader()
-    dl.login(token=FINMIND_TOKEN) # 修正 KeyError: 獲取名單前須登入
+    if hasattr(dl, 'login'):
+        dl.login(token=FINMIND_TOKEN)
     try:
         df_info = dl.taiwan_stock_info()
         df_info = df_info[df_info['type'] == 'twse']
@@ -120,10 +126,10 @@ def to_excel(df):
 if st.button('🚀 執行 100 強數據分析'):
     base_list = get_top_100_list()
     if not base_list:
-        st.error("無法獲取股票名單，請檢查 FinMind Token。")
+        st.error("無法獲取股票名單。請檢查網路或 API 狀態。")
         st.stop()
 
-    with st.status("🔍 正在分析台股財報與三期營收數據...", expanded=True) as status:
+    with st.status("🔍 正在分析台股數據 (含三期營收)...", expanded=True) as status:
         full_df = get_all_stock_data(base_list)
         status.update(label="✅ 分析完成！", state="complete")
     
@@ -138,17 +144,17 @@ if st.button('🚀 執行 100 強數據分析'):
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
         
-        st.subheader("💰 現金殖利率前 20 名 (含三期營收對比)")
+        st.subheader("💰 現金殖利率前 20 名 (含三期營收)")
         display_df = full_df.head(20).reset_index(drop=True)
         st.dataframe(display_df, use_container_width=True, hide_index=True)
         
-        # --- 5. 視覺化圖表 (修正 SyntaxError) ---
+        # --- 5. 視覺化圖表 ---
         st.divider()
-        st.subheader("📊 前 20 名殖利率分佈")
+        st.subheader("📊 前 20 名殖利率視覺化")
         
         display_df['現金殖利率(%)'] = pd.to_numeric(display_df['現金殖利率(%)'], errors='coerce')
         
-        # 修正圖表語法連結
+        # 修正：移除多餘的點號與鏈式調用語法
         chart = alt.Chart(display_df).mark_bar(
             color='#FF4B4B',
             cornerRadiusTopLeft=3,
@@ -166,7 +172,7 @@ if st.button('🚀 執行 100 強數據分析'):
         st.altair_chart(chart, use_container_width=True)
         
     else:
-        st.error("未能成功抓取數據，請稍後再試。")
+        st.error("分析結果為空。")
 
 if st.button('🧹 清除快取'):
     st.cache_data.clear()
