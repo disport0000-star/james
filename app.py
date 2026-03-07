@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import concurrent.futures
 import io
 import altair as alt
+import time  # 必須引入 time 來做延遲
 
 # --- 1. 網頁基本設定 ---
 st.set_page_config(page_title="台股精選 100 強監控", layout="wide")
@@ -14,13 +15,15 @@ st.title("📈 台股市值前 100 強財務監控")
 # 您的 FinMind 金鑰
 FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMy0wNyAxNTowNToyNiIsInVzZXJfaWQiOiJqYW1lc2FjZTA4IiwiZW1haWwiOiJkaXNwb3J0YWNlQHlhaG9vLmNvbS50dyIsImlwIjoiMTExLjI1NS4xMTAuNDkifQ.FLkCVK6j0S6TfgAI-_hAhaa3i11pmwlntZZP2X1RiIs"
 
-st.write(f"系統狀態：網頁 40 強與 Excel 100 強優化版 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
+st.write(f"系統狀態：防伺服器阻擋 (安全延遲) 版 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
 
 # --- 2. 核心抓取函數 ---
 @st.cache_data(ttl=3600)
-def get_all_stock_data_v2(base_list):
+def get_all_stock_data_v3(base_list):  # 再次改名破除快取
     final_results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+    
+    # 【優化】把 max_workers 降到 4，避免瞬間流量太大被伺服器封鎖
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         futures = [executor.submit(fetch_single_stock, s[0], s[1]) for s in base_list]
         for future in concurrent.futures.as_completed(futures):
             res = future.result()
@@ -29,10 +32,15 @@ def get_all_stock_data_v2(base_list):
     return pd.DataFrame(final_results)
 
 def fetch_single_stock(sid, sname):
+    # 【優化】每次抓取前，隨機休息 0.5 到 1 秒，偽裝成真人在查詢，避免被 Yahoo/FinMind 擋 IP
+    time.sleep(0.5) 
+    
     clean_id = str(sid)
     full_sid = f"{clean_id}.TW"
+    
+    # 建立 DataLoader 並登入
     dl = DataLoader()
-    dl.login_by_token(api_token=FINMIND_TOKEN) # 明確登入驗證
+    dl.login_by_token(api_token=FINMIND_TOKEN)
     
     try:
         stock = yf.Ticker(full_sid)
@@ -98,7 +106,7 @@ def fetch_single_stock(sid, sname):
                 if len(df_rev) > 2:
                     rev_m2 = f"{round(df_rev.iloc[2]['revenue'] / 1000):,.0f}"
         except Exception:
-            pass # 內部營收抓取錯誤直接略過，不影響其他數據
+            pass # 內部營收抓取錯誤直接略過
 
         # 整理最終輸出的欄位順序
         return {
@@ -124,7 +132,7 @@ def fetch_single_stock(sid, sname):
 
 # --- 3. 獲取名單與 Excel 轉換 ---
 @st.cache_data(ttl=86400)
-def get_top_100_list_v2():
+def get_top_100_list_v3():
     try:
         dl = DataLoader()
         dl.login_by_token(api_token=FINMIND_TOKEN)
@@ -135,7 +143,6 @@ def get_top_100_list_v2():
             return []
             
         df_info = df_info[df_info['type'] == 'twse']
-        # 剃除重複的股票代號
         df_info = df_info.drop_duplicates(subset=['stock_id'])
         
         return [[row['stock_id'], row['stock_name']] for _, row in df_info.head(100).iterrows()]
@@ -146,58 +153,3 @@ def get_top_100_list_v2():
 def to_excel(df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='Data')
-    return output.getvalue()
-
-# --- 4. 介面主邏輯 ---
-if st.button('🚀 啟動 100 強數據分析'):
-    base_list = get_top_100_list_v2()
-    
-    if not base_list:
-        st.error("目前無法獲取股票名單，請稍後再試。")
-    else:
-        with st.status("🔍 正在抓取個股財務數據...", expanded=True) as status:
-            full_df = get_all_stock_data_v2(base_list)
-            status.update(label="✅ 分析完成！", state="complete")
-        
-        if not full_df.empty:
-            full_df = full_df.drop_duplicates(subset=['股票代號'])
-            full_df = full_df.sort_values(by='現金殖利率(%)', ascending=False)
-            
-            # 【優化 2】：確保 Excel 檔案為前 100 強 (最多 100 筆)
-            excel_df = full_df.head(100)
-            
-            st.success(f"✅ 本次成功分析並獲取 {len(full_df)} 檔股票資料！")
-            
-            # 下載按鈕 (丟進去的是 excel_df)
-            st.download_button(
-                label=f"📥 下載完整前 {len(excel_df)} 強個股財報 Excel",
-                data=to_excel(excel_df),
-                file_name=f"Taiwan_Top100_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-            
-            # 【優化 1】：顯示數據 (網頁上改顯示前 40 名)
-            st.subheader("💰 現金殖利率前 40 名")
-            display_df = full_df.head(40).reset_index(drop=True)
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
-            
-            # 視覺化同步變更為 40 名
-            st.divider()
-            st.subheader("📊 前 40 名殖利率分佈視覺化")
-            chart = alt.Chart(display_df).mark_bar(color='#FF4B4B').encode(
-                x=alt.X('公司名稱:N', sort='-y', title='公司名稱'),
-                y=alt.Y('現金殖利率(%):Q', title='現金殖利率 (%)'),
-                tooltip=['公司名稱', '現金殖利率(%)', '目前股價']
-            ).properties(height=400).interactive(bind_y=False)
-            
-            st.altair_chart(chart, use_container_width=True)
-        else:
-            st.error("分析結果為空，請確認 API 連線狀態。")
-
-# 側邊欄
-with st.sidebar:
-    st.info("若出現 KeyError，通常是 API 配額用盡或伺服器超載。")
-    if st.button('🧹 清除快取並重啟'):
-        st.cache_data.clear()
-        st.rerun()
