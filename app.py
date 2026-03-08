@@ -23,7 +23,6 @@ FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMy0wNy
 
 st.write(f"系統狀態：V1.3 新增股票股利版 (目前時間: {datetime.now().strftime('%H:%M:%S')})")
 
-# 【重要修改】更改快取檔名，強迫建立包含「股票股利」的新檔案
 LOCAL_CACHE_FILE = "taiwan_top300_cache_v1_3.csv"
 
 # --- 2. 日期邏輯檢查 ---
@@ -78,7 +77,6 @@ def fetch_single_stock(sid, sname):
         else:
             calc_yield = 0.0
 
-        # 【新增】抓取股票股利資訊
         stock_div = info.get('stockDividendValue', 0.0) or 0.0
 
         eps_q0, eps_q1, eps_q2 = 0.0, 0.0, 0.0
@@ -101,28 +99,4 @@ def fetch_single_stock(sid, sname):
         rev_m0, rev_m1, rev_m2, r_growth = "N/A", "N/A", "N/A", "N/A"
         
         try:
-            df_rev = dl.taiwan_stock_month_revenue(
-                stock_id=clean_id, 
-                start_date=(datetime.now() - timedelta(days=120)).strftime('%Y-%m-%d')
-            )
-            if df_rev is not None and not df_rev.empty:
-                df_rev = df_rev.sort_values('date', ascending=False)
-                if len(df_rev) > 0: 
-                    rev_m0 = f"{round(df_rev.iloc[0]['revenue'] / 1000):,.0f}"
-                if len(df_rev) > 1:
-                    r0, r1 = df_rev.iloc[0]['revenue'], df_rev.iloc[1]['revenue']
-                    rev_m1 = f"{round(r1 / 1000):,.0f}"
-                    r_growth = f"{round(((r0-r1)/r1)*100, 1)}%" if r1 != 0 else "0%"
-                if len(df_rev) > 2:
-                    rev_m2 = f"{round(df_rev.iloc[2]['revenue'] / 1000):,.0f}"
-        except Exception:
-            pass 
-
-        return {
-            '股票代號': clean_id, 
-            '公司名稱': sname, 
-            '目前股價': curr_price,
-            '現金殖利率(%)': calc_yield, 
-            '現金股利': cash_div,
-            '股票股利': stock_div,  # 【新增欄位】安插在現金股利後方
-            '最新季EPS': eps
+            df_rev = dl.taiwan_stock_month
