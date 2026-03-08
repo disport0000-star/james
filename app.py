@@ -6,7 +6,8 @@ from datetime import datetime, timedelta
 import concurrent.futures
 import io
 import altair as alt
-import time  # 必須引入 time 來做延遲
+import time
+import random  # 【新增】引入 random 模組來產生隨機時間
 
 # --- 1. 網頁基本設定 ---
 st.set_page_config(page_title="台股精選 100 強監控", layout="wide")
@@ -15,13 +16,14 @@ st.title("📈 台股市值前 100 強財務監控")
 # 您的 FinMind 金鑰
 FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMy0wNyAxNTowNToyNiIsInVzZXJfaWQiOiJqYW1lc2FjZTA4IiwiZW1haWwiOiJkaXNwb3J0YWNlQHlhaG9vLmNvbS50dyIsImlwIjoiMTExLjI1NS4xMTAuNDkifQ.FLkCVK6j0S6TfgAI-_hAhaa3i11pmwlntZZP2X1RiIs"
 
-st.write(f"系統狀態：修正 Excel 縮排錯誤版 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
+st.write(f"系統狀態：隨機延遲防封鎖終極版 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
 
-# --- 2. 核心抓取函數 ---
+# --- 2. 核心抓取函數 (升級至 v4 強制破除舊快取) ---
 @st.cache_data(ttl=3600)
-def get_all_stock_data_v3(base_list):
+def get_all_stock_data_v4(base_list):
     final_results = []
     
+    # 保持並發數為 4，以最安全的節奏抓取
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         futures = [executor.submit(fetch_single_stock, s[0], s[1]) for s in base_list]
         for future in concurrent.futures.as_completed(futures):
@@ -31,7 +33,8 @@ def get_all_stock_data_v3(base_list):
     return pd.DataFrame(final_results)
 
 def fetch_single_stock(sid, sname):
-    time.sleep(0.5) 
+    # 【關鍵優化】隨機休息 0.8 到 2.0 秒，徹底偽裝成真人點擊，大幅降低被 Yahoo/FinMind 封鎖 IP 的機率
+    time.sleep(random.uniform(0.8, 2.0)) 
     
     clean_id = str(sid)
     full_sid = f"{clean_id}.TW"
@@ -129,7 +132,7 @@ def fetch_single_stock(sid, sname):
 
 # --- 3. 獲取名單與 Excel 轉換 ---
 @st.cache_data(ttl=86400)
-def get_top_100_list_v3():
+def get_top_100_list_v4():
     try:
         dl = DataLoader()
         dl.login_by_token(api_token=FINMIND_TOKEN)
@@ -147,7 +150,6 @@ def get_top_100_list_v3():
         st.error(f"❌ 獲取清單時發生錯誤: {e}")
         return []
 
-# 這裡就是報錯的地方，已經為您嚴格對齊了！
 def to_excel(df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -155,14 +157,14 @@ def to_excel(df):
     return output.getvalue()
 
 # --- 4. 介面主邏輯 ---
-if st.button('🚀 啟動 100 強數據分析 (請耐心等待約1分鐘)'):
-    base_list = get_top_100_list_v3()
+if st.button('🚀 啟動 100 強數據分析 (請耐心等待約1~2分鐘)'):
+    base_list = get_top_100_list_v4()
     
     if not base_list:
         st.error("目前無法獲取股票名單，請稍後再試。")
     else:
-        with st.status("🔍 正在緩慢抓取個股財務數據，避免被伺服器封鎖...", expanded=True) as status:
-            full_df = get_all_stock_data_v3(base_list)
+        with st.status("🔍 正在以安全節奏緩慢抓取財務數據，避免被伺服器封鎖...", expanded=True) as status:
+            full_df = get_all_stock_data_v4(base_list)
             status.update(label="✅ 分析完成！", state="complete")
         
         if not full_df.empty:
@@ -171,11 +173,13 @@ if st.button('🚀 啟動 100 強數據分析 (請耐心等待約1分鐘)'):
             
             excel_df = full_df.head(100)
             
+            # 判斷抓取成功率並給予對應提示
             if len(full_df) >= 90:
                 st.success(f"✅ 太棒了！本次成功分析並獲取 {len(full_df)} 檔股票資料！")
-            else:
+            elif len(full_df) > 0:
                 st.warning(f"⚠️ 伺服器稍稍不給力，本次成功獲取 {len(full_df)} 檔股票資料。如果您希望抓滿 100 檔，可以稍後再試。")
             
+            # 下載按鈕
             st.download_button(
                 label=f"📥 下載完整前 {len(excel_df)} 強個股財報 Excel",
                 data=to_excel(excel_df),
@@ -183,10 +187,12 @@ if st.button('🚀 啟動 100 強數據分析 (請耐心等待約1分鐘)'):
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
             
+            # 網頁顯示前 40 強
             st.subheader("💰 現金殖利率前 40 名")
             display_df = full_df.head(40).reset_index(drop=True)
             st.dataframe(display_df, use_container_width=True, hide_index=True)
             
+            # 視覺化圖表
             st.divider()
             st.subheader("📊 前 40 名殖利率分佈視覺化")
             chart = alt.Chart(display_df).mark_bar(color='#FF4B4B').encode(
@@ -197,11 +203,11 @@ if st.button('🚀 啟動 100 強數據分析 (請耐心等待約1分鐘)'):
             
             st.altair_chart(chart, use_container_width=True)
         else:
-            st.error("分析結果為空，請確認 API 連線狀態。")
+            st.error("分析結果為空。這通常代表 API 暫時阻擋了連線，請稍待 5~10 分鐘，點擊側邊欄的清除快取後再試一次。")
 
 # 側邊欄
 with st.sidebar:
-    st.info("若出現 KeyError，通常是 API 配額用盡或伺服器超載。")
+    st.info("💡 小提示：若出現結果為空，通常是 API 配額用盡或伺服器超載防護。休息一下再試即可！")
     if st.button('🧹 清除快取並重啟'):
         st.cache_data.clear()
         st.rerun()
