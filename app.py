@@ -1,5 +1,5 @@
 # ==========================================
-# 📈 台股精選 100 強財務監控 - V1.1 新增EPS比較版
+# 📈 台股精選 300 強財務監控 - V1.2 擴編版
 # (基於 V1 標準版核心功能延伸)
 # ==========================================
 import streamlit as st
@@ -15,16 +15,16 @@ import random
 import os
 
 # --- 1. 網頁基本設定 ---
-st.set_page_config(page_title="台股精選 100 強監控", layout="wide")
-st.title("📈 台股市值前 100 強財務監控")
+st.set_page_config(page_title="台股精選 300 強監控", layout="wide")
+st.title("📈 台股市值前 300 強財務監控")
 
 # 您的 FinMind 金鑰
 FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMy0wNyAxNTowNToyNiIsInVzZXJfaWQiOiJqYW1lc2FjZTA4IiwiZW1haWwiOiJkaXNwb3J0YWNlQHlhaG9vLmNvbS50dyIsImlwIjoiMTExLjI1NS4xMTAuNDkifQ.FLkCVK6j0S6TfgAI-_hAhaa3i11pmwlntZZP2X1RiIs"
 
-st.write(f"系統狀態：V1.1 新增 EPS 增減比較版 (目前時間: {datetime.now().strftime('%H:%M:%S')})")
+st.write(f"系統狀態：V1.2 擴編 300 強版 (目前時間: {datetime.now().strftime('%H:%M:%S')})")
 
-# 【重要修改】更改快取檔名，強迫系統第一次執行時重新建立帶有新欄位的檔案
-LOCAL_CACHE_FILE = "taiwan_top100_cache_v1_1.csv"
+# 【重要修改】更改快取檔名，避免與 100 強的檔案混淆，並強制重新抓取
+LOCAL_CACHE_FILE = "taiwan_top300_cache_v1_2.csv"
 
 # --- 2. 日期邏輯檢查 ---
 def get_recent_10th_date():
@@ -89,10 +89,8 @@ def fetch_single_stock(sid, sname):
         else:
             eps_q0 = round(info.get('trailingEps', 0), 2)
 
-        # 【新增】計算與上一季EPS比較增減(%)
         eps_growth = "N/A"
         if eps_q1 != 0:
-            # 這裡用 abs(eps_q1) 是為了避免上一季是負數時，算出來的成長率正負號錯亂
             eps_growth = f"{round(((eps_q0 - eps_q1) / abs(eps_q1)) * 100, 1)}%"
         else:
             eps_growth = "0%" if eps_q0 == 0 else "N/A"
@@ -126,7 +124,7 @@ def fetch_single_stock(sid, sname):
             '最新季EPS': eps_q0, 
             '上一季EPS': eps_q1, 
             '上上一季EPS': eps_q2,
-            '與上一季EPS比較增減(%)': eps_growth,  # 【新增欄位】安插在上上一季EPS後面
+            '與上一季EPS比較增減(%)': eps_growth,
             '最新一期營收(千元)': rev_m0, 
             '上一期營收(千元)': rev_m1, 
             '上上一期營收(千元)': rev_m2, 
@@ -153,7 +151,8 @@ def get_base_stock_list():
         df_info = df_info[df_info['type'] == 'twse']
         df_info = df_info.drop_duplicates(subset=['stock_id'])
         
-        return [[row['stock_id'], row['stock_name']] for _, row in df_info.head(200).iterrows()]
+        # 【修改點 1】：從 200 檔備胎擴大到 500 檔備胎
+        return [[row['stock_id'], row['stock_name']] for _, row in df_info.head(500).iterrows()]
     except Exception as e:
         return []
 
@@ -194,14 +193,15 @@ def process_data(force_update=False):
             st.error("目前無法獲取股票名單，請稍後再試。")
             return pd.DataFrame()
             
-        with st.status("🔍 正在抓取 200 檔備胎數據，以確保能完美篩選出 100 強 (約需2~3分鐘)...", expanded=True) as status:
+        with st.status("🔍 正在抓取 500 檔備胎數據，以確保能完美篩選出 300 強 (預計需耐心等待 5~8 分鐘)...", expanded=True) as status:
             new_df = get_all_stock_data_v5(base_list)
             
             if not new_df.empty:
                 new_df = new_df.drop_duplicates(subset=['股票代號'])
                 new_df = new_df.sort_values(by='現金殖利率(%)', ascending=False)
                 
-                new_df = new_df.head(100)
+                # 【修改點 2】：從擷取 100 筆改為擷取 300 筆
+                new_df = new_df.head(300)
                 
                 new_df.to_csv(LOCAL_CACHE_FILE, index=False, encoding='utf-8-sig')
                 status.update(label=f"✅ 新資料分析並儲存完成！成功鎖定 {len(new_df)} 檔股票。", state="complete")
@@ -218,8 +218,7 @@ with st.sidebar:
     st.info("💡 系統預設：開啟網頁自動顯示快取。每月 10 號會自動上網更新。")
     force_update = st.button('🔄 強制重新抓取 (無視 10 號限制)')
 
-# 保留主畫面的手動檢查按鈕
-normal_update = st.button('🚀 載入 / 更新 100 強數據分析')
+normal_update = st.button('🚀 載入 / 更新 300 強數據分析')
 
 full_df = process_data(force_update=force_update)
 
@@ -227,7 +226,7 @@ if not full_df.empty:
     st.download_button(
         label=f"📥 下載完整前 {len(full_df)} 強個股財報 Excel",
         data=to_excel(full_df),
-        file_name=f"Taiwan_Top100_{datetime.now().strftime('%Y%m%d')}.xlsx",
+        file_name=f"Taiwan_Top300_{datetime.now().strftime('%Y%m%d')}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
     
