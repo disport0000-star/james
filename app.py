@@ -1,5 +1,5 @@
 # ==========================================
-# 📈 台股精選 100 強財務監控 - V3 自動顯示與手動控制並存版
+# 📈 台股精選 100 強財務監控 - V1.1 新增EPS比較版
 # (基於 V1 標準版核心功能延伸)
 # ==========================================
 import streamlit as st
@@ -21,9 +21,10 @@ st.title("📈 台股市值前 100 強財務監控")
 # 您的 FinMind 金鑰
 FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMy0wNyAxNTowNToyNiIsInVzZXJfaWQiOiJqYW1lc2FjZTA4IiwiZW1haWwiOiJkaXNwb3J0YWNlQHlhaG9vLmNvbS50dyIsImlwIjoiMTExLjI1NS4xMTAuNDkifQ.FLkCVK6j0S6TfgAI-_hAhaa3i11pmwlntZZP2X1RiIs"
 
-st.write(f"系統狀態：V3 自動顯示 + 手動控制保留版 (目前時間: {datetime.now().strftime('%H:%M:%S')})")
+st.write(f"系統狀態：V1.1 新增 EPS 增減比較版 (目前時間: {datetime.now().strftime('%H:%M:%S')})")
 
-LOCAL_CACHE_FILE = "taiwan_top100_cache.csv"
+# 【重要修改】更改快取檔名，強迫系統第一次執行時重新建立帶有新欄位的檔案
+LOCAL_CACHE_FILE = "taiwan_top100_cache_v1_1.csv"
 
 # --- 2. 日期邏輯檢查 ---
 def get_recent_10th_date():
@@ -88,6 +89,14 @@ def fetch_single_stock(sid, sname):
         else:
             eps_q0 = round(info.get('trailingEps', 0), 2)
 
+        # 【新增】計算與上一季EPS比較增減(%)
+        eps_growth = "N/A"
+        if eps_q1 != 0:
+            # 這裡用 abs(eps_q1) 是為了避免上一季是負數時，算出來的成長率正負號錯亂
+            eps_growth = f"{round(((eps_q0 - eps_q1) / abs(eps_q1)) * 100, 1)}%"
+        else:
+            eps_growth = "0%" if eps_q0 == 0 else "N/A"
+
         rev_m0, rev_m1, rev_m2, r_growth = "N/A", "N/A", "N/A", "N/A"
         
         try:
@@ -117,6 +126,7 @@ def fetch_single_stock(sid, sname):
             '最新季EPS': eps_q0, 
             '上一季EPS': eps_q1, 
             '上上一季EPS': eps_q2,
+            '與上一季EPS比較增減(%)': eps_growth,  # 【新增欄位】安插在上上一季EPS後面
             '最新一期營收(千元)': rev_m0, 
             '上一期營收(千元)': rev_m1, 
             '上上一期營收(千元)': rev_m2, 
@@ -211,8 +221,6 @@ with st.sidebar:
 # 保留主畫面的手動檢查按鈕
 normal_update = st.button('🚀 載入 / 更新 100 強數據分析')
 
-# 【核心機制】無論有沒有按按鈕，都會執行 process_data。
-# 若有按「強制抓取」，force_update 才會傳入 True；否則依循 V1 聰明的預設檢查邏輯。
 full_df = process_data(force_update=force_update)
 
 if not full_df.empty:
