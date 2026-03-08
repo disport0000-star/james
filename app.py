@@ -228,3 +228,20 @@ if not full_df.empty:
         data=to_excel(full_df),
         file_name=f"Taiwan_Top300_{datetime.now().strftime('%Y%m%d')}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    
+    st.subheader("💰 現金殖利率前 40 名")
+    display_df = full_df.head(40).reset_index(drop=True)
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    
+    st.divider()
+    st.subheader("📊 前 40 名殖利率分佈視覺化")
+    chart = alt.Chart(display_df).mark_bar(color='#FF4B4B').encode(
+        x=alt.X('公司名稱:N', sort='-y', title='公司名稱'),
+        y=alt.Y('現金殖利率(%):Q', title='現金殖利率 (%)'),
+        tooltip=['公司名稱', '現金殖利率(%)', '目前股價']
+    ).properties(height=400).interactive(bind_y=False)
+    
+    st.altair_chart(chart, use_container_width=True)
+else:
+    st.error("分析結果為空。這通常代表本地沒有快取且 API 暫時阻擋了連線，請稍待片刻後再試。")
