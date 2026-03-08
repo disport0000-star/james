@@ -1,3 +1,7 @@
+# ==========================================
+# 📈 台股精選 100 強財務監控 - V3 自動顯示與手動控制並存版
+# (基於 V1 標準版核心功能延伸)
+# ==========================================
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -17,7 +21,7 @@ st.title("📈 台股市值前 100 強財務監控")
 # 您的 FinMind 金鑰
 FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMy0wNyAxNTowNToyNiIsInVzZXJfaWQiOiJqYW1lc2FjZTA4IiwiZW1haWwiOiJkaXNwb3J0YWNlQHlhaG9vLmNvbS50dyIsImlwIjoiMTExLjI1NS4xMTAuNDkifQ.FLkCVK6j0S6TfgAI-_hAhaa3i11pmwlntZZP2X1RiIs"
 
-st.write(f"系統狀態：確保百強完整產出 (備胎機制版) (目前時間: {datetime.now().strftime('%H:%M:%S')})")
+st.write(f"系統狀態：V3 自動顯示 + 手動控制保留版 (目前時間: {datetime.now().strftime('%H:%M:%S')})")
 
 LOCAL_CACHE_FILE = "taiwan_top100_cache.csv"
 
@@ -139,7 +143,6 @@ def get_base_stock_list():
         df_info = df_info[df_info['type'] == 'twse']
         df_info = df_info.drop_duplicates(subset=['stock_id'])
         
-        # 【關鍵修改】：我們抓取前 200 檔作為基底名單，確保就算 API 漏接，也能篩選出最完整的 100 檔
         return [[row['stock_id'], row['stock_name']] for _, row in df_info.head(200).iterrows()]
     except Exception as e:
         return []
@@ -188,7 +191,6 @@ def process_data(force_update=False):
                 new_df = new_df.drop_duplicates(subset=['股票代號'])
                 new_df = new_df.sort_values(by='現金殖利率(%)', ascending=False)
                 
-                # 【關鍵修改】：在此處確保最終存入檔案的數據「最多只有 100 檔」
                 new_df = new_df.head(100)
                 
                 new_df.to_csv(LOCAL_CACHE_FILE, index=False, encoding='utf-8-sig')
@@ -201,36 +203,38 @@ def process_data(force_update=False):
         return cached_df
 
 # --- 6. 介面呈現 ---
-run_analysis = st.button('🚀 載入 / 更新 100 強數據分析')
 
 with st.sidebar:
-    st.info("💡 系統預設：每月 10 號自動上網抓取新資料，其餘時間秒讀本地快取。")
+    st.info("💡 系統預設：開啟網頁自動顯示快取。每月 10 號會自動上網更新。")
     force_update = st.button('🔄 強制重新抓取 (無視 10 號限制)')
 
-if run_analysis or force_update:
-    full_df = process_data(force_update=force_update)
+# 保留主畫面的手動檢查按鈕
+normal_update = st.button('🚀 載入 / 更新 100 強數據分析')
+
+# 【核心機制】無論有沒有按按鈕，都會執行 process_data。
+# 若有按「強制抓取」，force_update 才會傳入 True；否則依循 V1 聰明的預設檢查邏輯。
+full_df = process_data(force_update=force_update)
+
+if not full_df.empty:
+    st.download_button(
+        label=f"📥 下載完整前 {len(full_df)} 強個股財報 Excel",
+        data=to_excel(full_df),
+        file_name=f"Taiwan_Top100_{datetime.now().strftime('%Y%m%d')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
     
-    if not full_df.empty:
-        # 下載按鈕 (此時的 full_df 已經被完美限制在 100 筆以內)
-        st.download_button(
-            label=f"📥 下載完整前 {len(full_df)} 強個股財報 Excel",
-            data=to_excel(full_df),
-            file_name=f"Taiwan_Top100_{datetime.now().strftime('%Y%m%d')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-        
-        st.subheader("💰 現金殖利率前 40 名")
-        display_df = full_df.head(40).reset_index(drop=True)
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
-        
-        st.divider()
-        st.subheader("📊 前 40 名殖利率分佈視覺化")
-        chart = alt.Chart(display_df).mark_bar(color='#FF4B4B').encode(
-            x=alt.X('公司名稱:N', sort='-y', title='公司名稱'),
-            y=alt.Y('現金殖利率(%):Q', title='現金殖利率 (%)'),
-            tooltip=['公司名稱', '現金殖利率(%)', '目前股價']
-        ).properties(height=400).interactive(bind_y=False)
-        
-        st.altair_chart(chart, use_container_width=True)
-    else:
-        st.error("分析結果為空。這通常代表 API 暫時阻擋了連線，請稍待片刻後再試。")
+    st.subheader("💰 現金殖利率前 40 名")
+    display_df = full_df.head(40).reset_index(drop=True)
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    
+    st.divider()
+    st.subheader("📊 前 40 名殖利率分佈視覺化")
+    chart = alt.Chart(display_df).mark_bar(color='#FF4B4B').encode(
+        x=alt.X('公司名稱:N', sort='-y', title='公司名稱'),
+        y=alt.Y('現金殖利率(%):Q', title='現金殖利率 (%)'),
+        tooltip=['公司名稱', '現金殖利率(%)', '目前股價']
+    ).properties(height=400).interactive(bind_y=False)
+    
+    st.altair_chart(chart, use_container_width=True)
+else:
+    st.error("分析結果為空。這通常代表本地沒有快取且 API 暫時阻擋了連線，請稍待片刻後再試。")
