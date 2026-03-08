@@ -1,5 +1,5 @@
 # ==========================================
-# 📈 台股精選 300 強財務監控 - V1.4 破除快取版
+# 📈 台股精選 300 強財務監控 - V1.5 FinMind 股票股利版
 # (基於 V1 標準版核心功能延伸)
 # ==========================================
 import streamlit as st
@@ -20,9 +20,9 @@ st.title("📈 台股市值前 300 強財務監控")
 
 FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMy0wNyAxNTowNToyNiIsInVzZXJfaWQiOiJqYW1lc2FjZTA4IiwiZW1haWwiOiJkaXNwb3J0YWNlQHlhaG9vLmNvbS50dyIsImlwIjoiMTExLjI1NS4xMTAuNDkifQ.FLkCVK6j0S6TfgAI-_hAhaa3i11pmwlntZZP2X1RiIs"
 
-st.write(f"系統狀態：V1.4 新增股票股利 (破除快取版) (目前時間: {datetime.now().strftime('%H:%M:%S')})")
+st.write(f"系統狀態：V1.5 啟用 FinMind 股票股利 (破除快取版) (目前時間: {datetime.now().strftime('%H:%M:%S')})")
 
-LOCAL_CACHE_FILE = "taiwan_top300_cache_v1_4.csv"
+LOCAL_CACHE_FILE = "taiwan_top300_cache_v1_5.csv"
 
 # --- 2. 日期邏輯檢查 ---
 def get_recent_10th_date():
@@ -35,9 +35,9 @@ def get_recent_10th_date():
         else:
             return datetime(now.year, now.month - 1, 10).date()
 
-# --- 3. 核心抓取函數 (升級為 v6 徹底破除舊快取) ---
+# --- 3. 核心抓取函數 (升級為 v7 徹底破除舊快取) ---
 @st.cache_data(ttl=3600)
-def get_all_stock_data_v6(base_list):
+def get_all_stock_data_v7(base_list):
     final_results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         futures = [executor.submit(fetch_single_stock, s[0], s[1]) for s in base_list]
@@ -64,6 +64,7 @@ def fetch_single_stock(sid, sname):
         if curr_price == 0: 
             return None
 
+        # 現金股利 (保留 yfinance 歷史加總演算法)
         div_history = stock.dividends
         if not div_history.empty:
             last_year_divs = div_history[div_history.index.tz_localize(None) >= (datetime.now() - timedelta(days=365))]
@@ -76,8 +77,21 @@ def fetch_single_stock(sid, sname):
         else:
             calc_yield = 0.0
 
-        # 抓取股票股利
-        stock_div = info.get('stockDividendValue', 0.0) or 0.0
+        # 【優化】股票股利 (切換為 FinMind API 獲取最新資料)
+        stock_div = 0.0
+        try:
+            # 抓取近兩年股利資料，確保能涵蓋最新的一筆
+            df_div = dl.taiwan_stock_dividend(
+                stock_id=clean_id, 
+                start_date=(datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
+            )
+            if df_div is not None and not df_div.empty:
+                df_div = df_div.sort_values('date', ascending=False)
+                if 'stock_dividend' in df_div.columns:
+                    # 取得排序後的第一筆(最新)股票股利
+                    stock_div = round(float(df_div.iloc[0]['stock_dividend']), 2)
+        except Exception:
+            pass # 若該股票無股利資料或 API 漏接，則保持 0.0
 
         eps_q0, eps_q1, eps_q2 = 0.0, 0.0, 0.0
         q_fin = stock.quarterly_financials
@@ -195,8 +209,7 @@ def process_data(force_update=False):
             return pd.DataFrame()
             
         with st.status("🔍 正在抓取 500 檔備胎數據，以確保能完美篩選出 300 強 (預計需耐心等待 5~8 分鐘)...", expanded=True) as status:
-            # 呼叫改名後的 V6 函數
-            new_df = get_all_stock_data_v6(base_list)
+            new_df = get_all_stock_data_v7(base_list)
             
             if not new_df.empty:
                 new_df = new_df.drop_duplicates(subset=['股票代號'])
@@ -216,7 +229,6 @@ with st.sidebar:
     st.info("💡 系統預設：開啟網頁自動顯示快取。每月 10 號會自動上網更新。")
     force_update = st.button('🔄 強制重新抓取 (無視 10 號限制)')
     st.divider()
-    # 加回清除快取按鈕
     if st.button('🧹 清除快取並重啟'):
         st.cache_data.clear()
         st.rerun()
