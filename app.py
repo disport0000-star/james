@@ -7,7 +7,8 @@ import concurrent.futures
 import io
 import altair as alt
 import time
-import random  # 【新增】引入 random 模組來產生隨機時間
+import random
+import os  # 【新增】用於檢查本地檔案是否存在
 
 # --- 1. 網頁基本設定 ---
 st.set_page_config(page_title="台股精選 100 強監控", layout="wide")
@@ -16,14 +17,29 @@ st.title("📈 台股市值前 100 強財務監控")
 # 您的 FinMind 金鑰
 FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMy0wNyAxNTowNToyNiIsInVzZXJfaWQiOiJqYW1lc2FjZTA4IiwiZW1haWwiOiJkaXNwb3J0YWNlQHlhaG9vLmNvbS50dyIsImlwIjoiMTExLjI1NS4xMTAuNDkifQ.FLkCVK6j0S6TfgAI-_hAhaa3i11pmwlntZZP2X1RiIs"
 
-st.write(f"系統狀態：隨機延遲防封鎖終極版 (更新時間: {datetime.now().strftime('%H:%M:%S')})")
+st.write(f"系統狀態：每月10號自動更新 (本地快取版) (目前時間: {datetime.now().strftime('%H:%M:%S')})")
 
-# --- 2. 核心抓取函數 (升級至 v4 強制破除舊快取) ---
+# 定義本地快取檔案名稱
+LOCAL_CACHE_FILE = "taiwan_top100_cache.csv"
+
+# --- 2. 日期邏輯檢查 ---
+def get_recent_10th_date():
+    """計算距離現在最近的 10 號是哪一天"""
+    now = datetime.now()
+    if now.day >= 10:
+        # 如果今天是 10 號(含)以後，目標更新日就是這個月的 10 號
+        return datetime(now.year, now.month, 10).date()
+    else:
+        # 如果今天是 10 號以前，目標更新日就是上個月的 10 號
+        if now.month == 1:
+            return datetime(now.year - 1, 12, 10).date()
+        else:
+            return datetime(now.year, now.month - 1, 10).date()
+
+# --- 3. 核心抓取函數 ---
 @st.cache_data(ttl=3600)
 def get_all_stock_data_v4(base_list):
     final_results = []
-    
-    # 保持並發數為 4，以最安全的節奏抓取
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         futures = [executor.submit(fetch_single_stock, s[0], s[1]) for s in base_list]
         for future in concurrent.futures.as_completed(futures):
@@ -33,7 +49,6 @@ def get_all_stock_data_v4(base_list):
     return pd.DataFrame(final_results)
 
 def fetch_single_stock(sid, sname):
-    # 【關鍵優化】隨機休息 0.8 到 2.0 秒，徹底偽裝成真人點擊，大幅降低被 Yahoo/FinMind 封鎖 IP 的機率
     time.sleep(random.uniform(0.8, 2.0)) 
     
     clean_id = str(sid)
@@ -108,7 +123,6 @@ def fetch_single_stock(sid, sname):
         except Exception:
             pass 
 
-        # 整理最終輸出的欄位順序
         return {
             '股票代號': clean_id, 
             '公司名稱': sname, 
@@ -126,11 +140,10 @@ def fetch_single_stock(sid, sname):
             '稅後淨利率(%)': round((info.get('profitMargins') or 0) * 100, 1),
             '更新日期': datetime.now().strftime('%Y-%m-%d')
         }
-        
     except Exception as e:
         return None
 
-# --- 3. 獲取名單與 Excel 轉換 ---
+# --- 4. 獲取名單與 Excel 轉換 ---
 @st.cache_data(ttl=86400)
 def get_top_100_list_v4():
     try:
@@ -139,15 +152,13 @@ def get_top_100_list_v4():
         df_info = dl.taiwan_stock_info()
         
         if df_info is None or df_info.empty:
-            st.warning("⚠️ 無法從 FinMind 取得股票清單，請確認 Token 配額。")
+            st.warning("⚠️ 無法從 FinMind 取得股票清單。")
             return []
             
         df_info = df_info[df_info['type'] == 'twse']
         df_info = df_info.drop_duplicates(subset=['stock_id'])
-        
         return [[row['stock_id'], row['stock_name']] for _, row in df_info.head(100).iterrows()]
     except Exception as e:
-        st.error(f"❌ 獲取清單時發生錯誤: {e}")
         return []
 
 def to_excel(df):
@@ -156,58 +167,94 @@ def to_excel(df):
         df.to_excel(writer, index=False, sheet_name='Data')
     return output.getvalue()
 
-# --- 4. 介面主邏輯 ---
-if st.button('🚀 啟動 100 強數據分析 (請耐心等待約1~2分鐘)'):
-    base_list = get_top_100_list_v4()
+# --- 5. 主流程 (智慧判斷是否需要重新抓取) ---
+def process_data(force_update=False):
+    need_update = force_update
+    cached_df = pd.DataFrame()
     
-    if not base_list:
-        st.error("目前無法獲取股票名單，請稍後再試。")
-    else:
-        with st.status("🔍 正在以安全節奏緩慢抓取財務數據，避免被伺服器封鎖...", expanded=True) as status:
-            full_df = get_all_stock_data_v4(base_list)
-            status.update(label="✅ 分析完成！", state="complete")
-        
-        if not full_df.empty:
-            full_df = full_df.drop_duplicates(subset=['股票代號'])
-            full_df = full_df.sort_values(by='現金殖利率(%)', ascending=False)
+    # 檢查本地是否有儲存過的檔案
+    if not force_update and os.path.exists(LOCAL_CACHE_FILE):
+        try:
+            # 讀取 CSV，確保股票代號不會被當成數字(保留前綴0)
+            cached_df = pd.read_csv(LOCAL_CACHE_FILE, dtype={'股票代號': str})
+            cached_df = cached_df.fillna("N/A")  # 填補空值
             
-            excel_df = full_df.head(100)
-            
-            # 判斷抓取成功率並給予對應提示
-            if len(full_df) >= 90:
-                st.success(f"✅ 太棒了！本次成功分析並獲取 {len(full_df)} 檔股票資料！")
-            elif len(full_df) > 0:
-                st.warning(f"⚠️ 伺服器稍稍不給力，本次成功獲取 {len(full_df)} 檔股票資料。如果您希望抓滿 100 檔，可以稍後再試。")
-            
-            # 下載按鈕
-            st.download_button(
-                label=f"📥 下載完整前 {len(excel_df)} 強個股財報 Excel",
-                data=to_excel(excel_df),
-                file_name=f"Taiwan_Top100_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-            
-            # 網頁顯示前 40 強
-            st.subheader("💰 現金殖利率前 40 名")
-            display_df = full_df.head(40).reset_index(drop=True)
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
-            
-            # 視覺化圖表
-            st.divider()
-            st.subheader("📊 前 40 名殖利率分佈視覺化")
-            chart = alt.Chart(display_df).mark_bar(color='#FF4B4B').encode(
-                x=alt.X('公司名稱:N', sort='-y', title='公司名稱'),
-                y=alt.Y('現金殖利率(%):Q', title='現金殖利率 (%)'),
-                tooltip=['公司名稱', '現金殖利率(%)', '目前股價']
-            ).properties(height=400).interactive(bind_y=False)
-            
-            st.altair_chart(chart, use_container_width=True)
-        else:
-            st.error("分析結果為空。這通常代表 API 暫時阻擋了連線，請稍待 5~10 分鐘，點擊側邊欄的清除快取後再試一次。")
+            if not cached_df.empty and '更新日期' in cached_df.columns:
+                last_update_str = str(cached_df['更新日期'].iloc[0])
+                last_update_date = datetime.strptime(last_update_str, '%Y-%m-%d').date()
+                target_date = get_recent_10th_date()
+                
+                # 如果最後更新日期小於「最近的 10 號」，代表該更新了
+                if last_update_date < target_date:
+                    need_update = True
+                    st.info(f"💡 系統偵測到需要更新 (上次更新: {last_update_str}，應更新基準: {target_date})，將自動擷取最新資料。")
+                else:
+                    st.success(f"⚡ 已瞬間載入本地儲存的資料 (最後更新: {last_update_str})，無需消耗 API 額度！")
+            else:
+                need_update = True
+        except Exception:
+            need_update = True  # 如果讀取檔案失敗，就強制重新抓取
 
-# 側邊欄
+    # 如果需要更新 (沒有檔案、過期、或手動強制更新)
+    if need_update:
+        base_list = get_top_100_list_v4()
+        if not base_list:
+            st.error("目前無法獲取股票名單，請稍後再試。")
+            return pd.DataFrame()
+            
+        with st.status("🔍 正在以安全節奏緩慢抓取財務數據 (約需1~2分鐘)...", expanded=True) as status:
+            new_df = get_all_stock_data_v4(base_list)
+            
+            if not new_df.empty:
+                new_df = new_df.drop_duplicates(subset=['股票代號'])
+                new_df = new_df.sort_values(by='現金殖利率(%)', ascending=False)
+                
+                # 【重要】抓取成功後，儲存一份到本地 CSV 檔案
+                new_df.to_csv(LOCAL_CACHE_FILE, index=False, encoding='utf-8-sig')
+                status.update(label="✅ 新資料分析並儲存完成！", state="complete")
+                return new_df
+            else:
+                status.update(label="❌ 抓取失敗", state="error")
+                return pd.DataFrame()
+    else:
+        return cached_df
+
+# --- 6. 介面呈現 ---
+# 按鈕觸發
+run_analysis = st.button('🚀 載入 / 更新 100 強數據分析')
+
 with st.sidebar:
-    st.info("💡 小提示：若出現結果為空，通常是 API 配額用盡或伺服器超載防護。休息一下再試即可！")
-    if st.button('🧹 清除快取並重啟'):
-        st.cache_data.clear()
-        st.rerun()
+    st.info("💡 系統預設：每月 10 號自動上網抓取新資料，其餘時間秒讀本地快取。")
+    force_update = st.button('🔄 強制重新抓取 (無視 10 號限制)')
+
+if run_analysis or force_update:
+    full_df = process_data(force_update=force_update)
+    
+    if not full_df.empty:
+        excel_df = full_df.head(100)
+        
+        # 下載按鈕
+        st.download_button(
+            label=f"📥 下載完整前 {len(excel_df)} 強個股財報 Excel",
+            data=to_excel(excel_df),
+            file_name=f"Taiwan_Top100_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        
+        # 網頁顯示前 40 強
+        st.subheader("💰 現金殖利率前 40 名")
+        display_df = full_df.head(40).reset_index(drop=True)
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
+        
+        # 視覺化圖表
+        st.divider()
+        st.subheader("📊 前 40 名殖利率分佈視覺化")
+        chart = alt.Chart(display_df).mark_bar(color='#FF4B4B').encode(
+            x=alt.X('公司名稱:N', sort='-y', title='公司名稱'),
+            y=alt.Y('現金殖利率(%):Q', title='現金殖利率 (%)'),
+            tooltip=['公司名稱', '現金殖利率(%)', '目前股價']
+        ).properties(height=400).interactive(bind_y=False)
+        
+        st.altair_chart(chart, use_container_width=True)
+    else:
+        st.error("分析結果為空。這通常代表 API 暫時阻擋了連線，請稍待 5~10 分鐘後再試。")
