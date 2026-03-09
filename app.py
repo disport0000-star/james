@@ -1,6 +1,6 @@
 # ==========================================
-# 📈 台股精選 300 強財務監控 - V1.5 FinMind 股票股利版
-# (基於 V1 標準版核心功能延伸)
+# 📈 台股精選 300 強財務監控 - V1.6 日曆年配息與純淨過濾版
+# (同步後台最佳化邏輯)
 # ==========================================
 import streamlit as st
 import yfinance as yf
@@ -20,9 +20,9 @@ st.title("📈 台股市值前 300 強財務監控")
 
 FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMy0wNyAxNTowNToyNiIsInVzZXJfaWQiOiJqYW1lc2FjZTA4IiwiZW1haWwiOiJkaXNwb3J0YWNlQHlhaG9vLmNvbS50dyIsImlwIjoiMTExLjI1NS4xMTAuNDkifQ.FLkCVK6j0S6TfgAI-_hAhaa3i11pmwlntZZP2X1RiIs"
 
-st.write(f"系統狀態：V1.5 啟用 FinMind 股票股利 (破除快取版) (目前時間: {datetime.now().strftime('%H:%M:%S')})")
+st.write(f"系統狀態：V1.6 日曆年配息與純淨過濾版 (目前時間: {datetime.now().strftime('%H:%M:%S')})")
 
-LOCAL_CACHE_FILE = "taiwan_top300_cache_v1_5.csv"
+LOCAL_CACHE_FILE = "taiwan_top300_cache_v1_6.csv"
 
 # --- 2. 日期邏輯檢查 ---
 def get_recent_10th_date():
@@ -35,9 +35,9 @@ def get_recent_10th_date():
         else:
             return datetime(now.year, now.month - 1, 10).date()
 
-# --- 3. 核心抓取函數 (升級為 v7 徹底破除舊快取) ---
+# --- 3. 核心抓取函數 (升級為 v8 徹底破除舊快取) ---
 @st.cache_data(ttl=3600)
-def get_all_stock_data_v7(base_list):
+def get_all_stock_data_v8(base_list):
     final_results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         futures = [executor.submit(fetch_single_stock, s[0], s[1]) for s in base_list]
@@ -64,10 +64,12 @@ def fetch_single_stock(sid, sname):
         if curr_price == 0: 
             return None
 
-        # 現金股利 (保留 yfinance 歷史加總演算法)
+        # 【同步修正】現金股利：嚴格抓取「去年全年度」的實際發放總和
         div_history = stock.dividends
         if not div_history.empty:
-            last_year_divs = div_history[div_history.index.tz_localize(None) >= (datetime.now() - timedelta(days=365))]
+            target_year = datetime.now().year - 1
+            div_dates = div_history.index.tz_localize(None)
+            last_year_divs = div_history[div_dates.year == target_year]
             cash_div = round(last_year_divs.sum(), 2)
         else:
             cash_div = 0.0
@@ -77,10 +79,9 @@ def fetch_single_stock(sid, sname):
         else:
             calc_yield = 0.0
 
-        # 【優化】股票股利 (切換為 FinMind API 獲取最新資料)
+        # 股票股利 (FinMind API)
         stock_div = 0.0
         try:
-            # 抓取近兩年股利資料，確保能涵蓋最新的一筆
             df_div = dl.taiwan_stock_dividend(
                 stock_id=clean_id, 
                 start_date=(datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
@@ -88,10 +89,9 @@ def fetch_single_stock(sid, sname):
             if df_div is not None and not df_div.empty:
                 df_div = df_div.sort_values('date', ascending=False)
                 if 'stock_dividend' in df_div.columns:
-                    # 取得排序後的第一筆(最新)股票股利
                     stock_div = round(float(df_div.iloc[0]['stock_dividend']), 2)
         except Exception:
-            pass # 若該股票無股利資料或 API 漏接，則保持 0.0
+            pass 
 
         eps_q0, eps_q1, eps_q2 = 0.0, 0.0, 0.0
         q_fin = stock.quarterly_financials
@@ -165,6 +165,12 @@ def get_base_stock_list():
             return []
             
         df_info = df_info[df_info['type'] == 'twse']
+        
+        # 【同步修正】加入黃金濾網，確保只抓取 4 碼純數字的一般個股
+        is_four_digits = df_info['stock_id'].astype(str).str.len() == 4
+        is_numeric = df_info['stock_id'].astype(str).str.isnumeric()
+        df_info = df_info[is_four_digits & is_numeric]
+        
         df_info = df_info.drop_duplicates(subset=['stock_id'])
         
         return [[row['stock_id'], row['stock_name']] for _, row in df_info.head(500).iterrows()]
@@ -208,15 +214,15 @@ def process_data(force_update=False):
             st.error("目前無法獲取股票名單，請稍後再試。")
             return pd.DataFrame()
             
-        with st.status("🔍 正在抓取 500 檔備胎數據，以確保能完美篩選出 300 強 (預計需耐心等待 5~8 分鐘)...", expanded=True) as status:
-            new_df = get_all_stock_data_v7(base_list)
+        with st.status("🔍 正在抓取 500 檔備胎純個股，以確保能完美篩選出 300 強 (預計需耐心等待 5~8 分鐘)...", expanded=True) as status:
+            new_df = get_all_stock_data_v8(base_list)
             
             if not new_df.empty:
                 new_df = new_df.drop_duplicates(subset=['股票代號'])
                 new_df = new_df.sort_values(by='現金殖利率(%)', ascending=False)
                 new_df = new_df.head(300)
                 new_df.to_csv(LOCAL_CACHE_FILE, index=False, encoding='utf-8-sig')
-                status.update(label=f"✅ 新資料分析並儲存完成！成功鎖定 {len(new_df)} 檔股票。", state="complete")
+                status.update(label=f"✅ 新資料分析並儲存完成！成功鎖定 {len(new_df)} 檔純個股。", state="complete")
                 return new_df
             else:
                 status.update(label="❌ 抓取失敗", state="error")
@@ -239,7 +245,7 @@ full_df = process_data(force_update=force_update)
 
 if not full_df.empty:
     st.download_button(
-        label=f"📥 下載完整前 {len(full_df)} 強個股財報 Excel",
+        label=f"📥 下載完整前 {len(full_df)} 強純個股財報 Excel",
         data=to_excel(full_df),
         file_name=f"Taiwan_Top300_{datetime.now().strftime('%Y%m%d')}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
