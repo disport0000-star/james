@@ -1,6 +1,6 @@
 # ==========================================
-# 📈 台股精選 300 強財務監控 - V1.7 專家匯入版
-# 完美結合本地端 VS Code 爬蟲結果，避開雲端 IP 封鎖
+# 📈 台股精選 300 強財務監控 - V1.8 總經擴充版 (20260321更新版)
+# 新增：近一年黃金價格走勢監控
 # ==========================================
 import streamlit as st
 import yfinance as yf
@@ -18,11 +18,11 @@ st.title("📈 台股市值前 300 強財務監控")
 
 FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMy0wNyAxNTowNToyNiIsInVzZXJfaWQiOiJqYW1lc2FjZTA4IiwiZW1haWwiOiJkaXNwb3J0YWNlQHlhaG9vLmNvbS50dyIsImlwIjoiMTExLjI1NS4xMTAuNDkifQ.FLkCVK6j0S6TfgAI-_hAhaa3i11pmwlntZZP2X1RiIs"
 
-st.write(f"系統狀態：V1.7 專家匯入版 (目前時間: {datetime.now().strftime('%H:%M:%S')})")
+st.write(f"系統狀態：V1.8 總經擴充版 (目前時間: {datetime.now().strftime('%H:%M:%S')})")
 
-LOCAL_CACHE_FILE = "taiwan_top300_cache_v1_7.csv"
+LOCAL_CACHE_FILE = "taiwan_top300_cache_v1_8.csv"
 
-# --- 2. 日期邏輯檢查 ---
+# --- 2. 日期與總經數據抓取函數 ---
 def get_recent_10th_date():
     now = datetime.now()
     if now.day >= 10:
@@ -33,7 +33,22 @@ def get_recent_10th_date():
         else:
             return datetime(now.year, now.month - 1, 10).date()
 
-# --- 3. 核心抓取函數 (保留雲端備用) ---
+# 【新增】抓取黃金近一年走勢，設定快取 1 小時避免頻繁要資料
+@st.cache_data(ttl=3600)
+def get_gold_trend():
+    try:
+        gold = yf.Ticker("GC=F")
+        df_gold = gold.history(period="1y")
+        if not df_gold.empty:
+            df_gold = df_gold.reset_index()
+            # 轉換日期格式以便 Altair 繪圖
+            df_gold['Date'] = pd.to_datetime(df_gold['Date']).dt.date
+            return df_gold[['Date', 'Close']]
+        return pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+# --- 3. 台股核心抓取函數 (保留雲端備用) ---
 @st.cache_data(ttl=3600)
 def get_all_stock_data_v9(base_list):
     final_results = []
@@ -46,7 +61,6 @@ def get_all_stock_data_v9(base_list):
     return pd.DataFrame(final_results)
 
 def fetch_single_stock(sid, sname):
-    # (此處保留原先的抓取邏輯，作為備用)
     import time, random
     time.sleep(random.uniform(1.0, 2.5)) 
     clean_id = str(sid)
@@ -153,14 +167,14 @@ def process_data(force_update=False):
             cached_df = pd.read_csv(LOCAL_CACHE_FILE, dtype={'股票代號': str})
             cached_df = cached_df.fillna("N/A")
             if not cached_df.empty:
-                st.success("⚡ 已成功載入本地數據！")
+                st.success("⚡ 已成功載入本地台股數據！")
                 return cached_df
         except Exception: pass
 
     if force_update:
         base_list = get_base_stock_list()
         if not base_list: return pd.DataFrame()
-        with st.status("🔍 正在透過雲端抓取備胎數據 (注意：此動作極易被 Yahoo 阻擋)...", expanded=True) as status:
+        with st.status("🔍 正在透過雲端抓取備胎數據...", expanded=True) as status:
             new_df = get_all_stock_data_v9(base_list)
             if not new_df.empty:
                 new_df = new_df.drop_duplicates(subset=['股票代號']).sort_values(by='現金殖利率(%)', ascending=False).head(300)
@@ -168,30 +182,28 @@ def process_data(force_update=False):
                 status.update(label=f"✅ 抓取完成！", state="complete")
                 return new_df
             else:
-                status.update(label="❌ 抓取失敗：雲端 IP 已被封鎖，請使用側邊欄上傳 VS Code 產出的 Excel。", state="error")
+                status.update(label="❌ 抓取失敗：請使用側邊欄上傳 VS Code 產出的 Excel。", state="error")
                 return pd.DataFrame()
     return pd.DataFrame()
 
 # --- 6. 側邊欄：專家匯入介面 ---
 with st.sidebar:
     st.markdown("### 🔌 專家模式：匯入本地資料")
-    st.info("💡 建議：使用 VS Code 執行爬蟲腳本後，將產出的 Excel 檔案直接拖曳到下方，即可避開雲端封鎖完美顯示！")
+    st.info("💡 將 VS Code 產出的全台股 Excel 拖曳到下方更新畫面！")
     
     uploaded_file = st.file_uploader("📂 上傳全台股 Excel", type=['xlsx'])
     if uploaded_file is not None:
         try:
-            # 讀取上傳的 Excel
             df_uploaded = pd.read_excel(uploaded_file, dtype={'股票代號': str})
-            # 篩選前 300 強並存入系統快取
             df_top300 = df_uploaded.sort_values(by='現金殖利率(%)', ascending=False).head(300)
             df_top300.to_csv(LOCAL_CACHE_FILE, index=False, encoding='utf-8-sig')
-            st.success("✅ 資料匯入成功！請點擊下方的「清除快取並重啟」按鈕來更新畫面。")
+            st.success("✅ 資料匯入成功！請點擊下方的「重啟網頁」按鈕。")
         except Exception as e:
             st.error(f"檔案讀取失敗：{e}")
 
     st.divider()
-    force_update = st.button('🔄 強制雲端抓取 (容易失敗)')
-    if st.button('🧹 清除快取並重啟'):
+    force_update = st.button('🔄 強制雲端抓取台股 (容易失敗)')
+    if st.button('🧹 清除快取並重啟網頁'):
         st.cache_data.clear()
         st.rerun()
 
@@ -206,7 +218,7 @@ if not full_df.empty:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
     
-    st.subheader("💰 現金殖利率前 40 名")
+    st.subheader("💰 台股現金殖利率前 40 名")
     display_df = full_df.head(40).reset_index(drop=True)
     st.dataframe(display_df, use_container_width=True, hide_index=True)
     
@@ -221,3 +233,24 @@ if not full_df.empty:
     st.altair_chart(chart, use_container_width=True)
 else:
     st.error("分析結果為空。請由左側邊欄上傳您在 VS Code 抓取好的 Excel 檔案！")
+
+# ==========================================
+# 🌟 全新模塊：黃金走勢圖區塊
+# ==========================================
+st.divider()
+st.subheader("🌟 總經指標：近一年黃金價格走勢 (美元/盎司)")
+
+df_gold = get_gold_trend()
+if not df_gold.empty:
+    # 畫一條閃亮的黃金專屬折線圖
+    gold_chart = alt.Chart(df_gold).mark_line(color='#FFD700', strokeWidth=3).encode(
+        x=alt.X('Date:T', title='日期'),
+        # scale=alt.Scale(zero=False) 讓 Y 軸不會從 0 開始，更能看清楚波動細節
+        y=alt.Y('Close:Q', title='收盤價 (USD)', scale=alt.Scale(zero=False)),
+        tooltip=[alt.Tooltip('Date:T', title='日期'), alt.Tooltip('Close:Q', title='收盤價 (USD)', format='.2f')]
+    ).properties(height=400).interactive(bind_y=False)
+    
+    st.altair_chart(gold_chart, use_container_width=True)
+    st.caption("資料來源：Yahoo Finance 紐約期貨黃金 (GC=F)")
+else:
+    st.warning("暫時無法取得黃金價格資料，請確認網路連線或稍後再試。")
