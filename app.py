@@ -1,6 +1,6 @@
 # ==========================================
-# 📈 台股精選 300 強財務監控 - V1.8 總經擴充版 (20260321更新版)
-# 新增：近一年黃金價格走勢監控
+# 📈 台股精選 300 強財務監控 - V1.9 總經雙箭頭版
+# 新增：黃金價格走勢 + 國發會官方景氣燈號即時連線
 # ==========================================
 import streamlit as st
 import yfinance as yf
@@ -11,6 +11,7 @@ import concurrent.futures
 import io
 import altair as alt
 import os
+import requests
 
 # --- 1. 網頁基本設定 ---
 st.set_page_config(page_title="台股精選 300 強監控", layout="wide")
@@ -18,22 +19,11 @@ st.title("📈 台股市值前 300 強財務監控")
 
 FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMy0wNyAxNTowNToyNiIsInVzZXJfaWQiOiJqYW1lc2FjZTA4IiwiZW1haWwiOiJkaXNwb3J0YWNlQHlhaG9vLmNvbS50dyIsImlwIjoiMTExLjI1NS4xMTAuNDkifQ.FLkCVK6j0S6TfgAI-_hAhaa3i11pmwlntZZP2X1RiIs"
 
-st.write(f"系統狀態：V1.8 總經擴充版 (目前時間: {datetime.now().strftime('%H:%M:%S')})")
+st.write(f"系統狀態：V1.9 總經雙箭頭版 (目前時間: {datetime.now().strftime('%H:%M:%S')})")
 
-LOCAL_CACHE_FILE = "taiwan_top300_cache_v1_8.csv"
+LOCAL_CACHE_FILE = "taiwan_top300_cache_v1_9.csv"
 
-# --- 2. 日期與總經數據抓取函數 ---
-def get_recent_10th_date():
-    now = datetime.now()
-    if now.day >= 10:
-        return datetime(now.year, now.month, 10).date()
-    else:
-        if now.month == 1:
-            return datetime(now.year - 1, 12, 10).date()
-        else:
-            return datetime(now.year, now.month - 1, 10).date()
-
-# 【新增】抓取黃金近一年走勢，設定快取 1 小時避免頻繁要資料
+# --- 2. 總經數據抓取函數 (黃金 + 景氣燈號) ---
 @st.cache_data(ttl=3600)
 def get_gold_trend():
     try:
@@ -41,12 +31,39 @@ def get_gold_trend():
         df_gold = gold.history(period="1y")
         if not df_gold.empty:
             df_gold = df_gold.reset_index()
-            # 轉換日期格式以便 Altair 繪圖
             df_gold['Date'] = pd.to_datetime(df_gold['Date']).dt.date
             return df_gold[['Date', 'Close']]
         return pd.DataFrame()
     except Exception:
         return pd.DataFrame()
+
+@st.cache_data(ttl=86400)  # 景氣燈號每月更新一次即可，快取設為 24 小時
+def get_taiwan_economic_light():
+    try:
+        # 呼叫國發會 (NDC) 官方 Open Data API
+        url = "https://od.ndc.gov.tw/api/v1/rest/datastore/A53000000A-000009"
+        res = requests.get(url, timeout=10)
+        data = res.json()
+        
+        if data.get('success'):
+            records = data['result']['records']
+            df = pd.DataFrame(records)
+            
+            # 整理國發會的欄位
+            df = df[['年月', '景氣對策信號綜合分數', '景氣對策信號檢查值']].copy()
+            df.columns = ['Date', 'Score', 'Light']
+            
+            # 轉換日期格式 (從 202401 變成 2024/01)
+            df['Date'] = df['Date'].astype(str).apply(lambda x: f"{x[:4]}/{x[4:]}")
+            df['Score'] = pd.to_numeric(df['Score'], errors='coerce')
+            df = df.dropna()
+            
+            # 取最近 24 個月的數據來畫圖
+            df = df.tail(24).reset_index(drop=True)
+            return df
+    except Exception as e:
+        print(f"Fetch Economic Light Error: {e}")
+    return pd.DataFrame()
 
 # --- 3. 台股核心抓取函數 (保留雲端備用) ---
 @st.cache_data(ttl=3600)
@@ -56,8 +73,7 @@ def get_all_stock_data_v9(base_list):
         futures = [executor.submit(fetch_single_stock, s[0], s[1]) for s in base_list]
         for future in concurrent.futures.as_completed(futures):
             res = future.result()
-            if res: 
-                final_results.append(res)
+            if res: final_results.append(res)
     return pd.DataFrame(final_results)
 
 def fetch_single_stock(sid, sname):
@@ -167,7 +183,6 @@ def process_data(force_update=False):
             cached_df = pd.read_csv(LOCAL_CACHE_FILE, dtype={'股票代號': str})
             cached_df = cached_df.fillna("N/A")
             if not cached_df.empty:
-                st.success("⚡ 已成功載入本地台股數據！")
                 return cached_df
         except Exception: pass
 
@@ -221,36 +236,57 @@ if not full_df.empty:
     st.subheader("💰 台股現金殖利率前 40 名")
     display_df = full_df.head(40).reset_index(drop=True)
     st.dataframe(display_df, use_container_width=True, hide_index=True)
-    
-    st.divider()
-    st.subheader("📊 前 40 名殖利率分佈視覺化")
-    chart = alt.Chart(display_df).mark_bar(color='#FF4B4B').encode(
-        x=alt.X('公司名稱:N', sort='-y', title='公司名稱'),
-        y=alt.Y('現金殖利率(%):Q', title='現金殖利率 (%)'),
-        tooltip=['公司名稱', '現金殖利率(%)', '目前股價']
-    ).properties(height=400).interactive(bind_y=False)
-    
-    st.altair_chart(chart, use_container_width=True)
 else:
     st.error("分析結果為空。請由左側邊欄上傳您在 VS Code 抓取好的 Excel 檔案！")
 
 # ==========================================
-# 🌟 全新模塊：黃金走勢圖區塊
+# 🌟 全新模塊：總經雙指標 (黃金 + 景氣燈號)
 # ==========================================
 st.divider()
-st.subheader("🌟 總經指標：近一年黃金價格走勢 (美元/盎司)")
+st.subheader("🌍 總經戰情室：景氣循環與資金流向")
 
-df_gold = get_gold_trend()
-if not df_gold.empty:
-    # 畫一條閃亮的黃金專屬折線圖
-    gold_chart = alt.Chart(df_gold).mark_line(color='#FFD700', strokeWidth=3).encode(
-        x=alt.X('Date:T', title='日期'),
-        # scale=alt.Scale(zero=False) 讓 Y 軸不會從 0 開始，更能看清楚波動細節
-        y=alt.Y('Close:Q', title='收盤價 (USD)', scale=alt.Scale(zero=False)),
-        tooltip=[alt.Tooltip('Date:T', title='日期'), alt.Tooltip('Close:Q', title='收盤價 (USD)', format='.2f')]
-    ).properties(height=400).interactive(bind_y=False)
-    
-    st.altair_chart(gold_chart, use_container_width=True)
-    st.caption("資料來源：Yahoo Finance 紐約期貨黃金 (GC=F)")
-else:
-    st.warning("暫時無法取得黃金價格資料，請確認網路連線或稍後再試。")
+# 使用 Streamlit 內建的雙欄位排版，讓畫面具備專業 Dashboard 質感
+col1, col2 = st.columns(2)
+
+with col1:
+    st.markdown("#### 🟡 近一年黃金價格走勢 (USD/oz)")
+    df_gold = get_gold_trend()
+    if not df_gold.empty:
+        gold_chart = alt.Chart(df_gold).mark_line(color='#FFD700', strokeWidth=3).encode(
+            x=alt.X('Date:T', title='日期'),
+            y=alt.Y('Close:Q', title='收盤價 (USD)', scale=alt.Scale(zero=False)),
+            tooltip=[alt.Tooltip('Date:T', title='日期'), alt.Tooltip('Close:Q', title='收盤價', format='.2f')]
+        ).properties(height=350).interactive(bind_y=False)
+        st.altair_chart(gold_chart, use_container_width=True)
+        st.caption("📈 資料來源：Yahoo Finance (紐約期金 GC=F)")
+    else:
+        st.warning("暫時無法取得黃金資料。")
+
+with col2:
+    st.markdown("#### 🚦 台灣景氣對策信號 (近 24 個月)")
+    df_light = get_taiwan_economic_light()
+    if not df_light.empty:
+        # 動態變色邏輯：精準對應國發會的 5 種燈號級距
+        color_condition = alt.condition(
+            alt.datum.Score >= 38, alt.value('#FF4B4B'),      # 紅燈 (熱絡)
+            alt.condition(alt.datum.Score >= 32, alt.value('#FF9F33'), # 黃紅燈 (轉向)
+            alt.condition(alt.datum.Score >= 23, alt.value('#28A745'), # 綠燈 (穩定)
+            alt.condition(alt.datum.Score >= 17, alt.value('#17A2B8'), # 黃藍燈 (轉向)
+            alt.value('#007BFF'))))                           # 藍燈 (低迷)
+        )
+        
+        light_chart = alt.Chart(df_light).mark_bar(size=12).encode(
+            x=alt.X('Date:N', title='年月', sort=None),
+            y=alt.Y('Score:Q', title='綜合分數', scale=alt.Scale(domain=[0, 45])),
+            color=color_condition,
+            tooltip=['Date:N', 'Score:Q', 'Light:N']
+        ).properties(height=350)
+        
+        # 加上關鍵水位參考線
+        line_green = alt.Chart(pd.DataFrame({'y': [23]})).mark_rule(color='#28A745', strokeDash=[5,5]).encode(y='y')
+        line_red = alt.Chart(pd.DataFrame({'y': [38]})).mark_rule(color='#FF4B4B', strokeDash=[5,5]).encode(y='y')
+        
+        st.altair_chart(light_chart + line_green + line_red, use_container_width=True)
+        st.caption("🚦 資料來源：國家發展委員會 Open Data API")
+    else:
+        st.warning("暫時無法取得國發會景氣燈號資料。")
