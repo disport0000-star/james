@@ -37,30 +37,42 @@ def get_gold_trend():
     except Exception:
         return pd.DataFrame()
 
-@st.cache_data(ttl=86400)  # 景氣燈號每月更新一次即可，快取設為 24 小時
+# --- 2. 總經數據抓取函數 (黃金 + 景氣燈號) ---
+# (保留原本的 get_gold_trend 函數不變...)
+
+@st.cache_data(ttl=86400)
 def get_taiwan_economic_light():
     try:
-        # 呼叫國發會 (NDC) 官方 Open Data API
         url = "https://od.ndc.gov.tw/api/v1/rest/datastore/A53000000A-000009"
-        res = requests.get(url, timeout=10)
-        data = res.json()
         
-        if data.get('success'):
-            records = data['result']['records']
-            df = pd.DataFrame(records)
+        # 【修正核心】加入瀏覽器偽裝 Header，避免被台灣政府防火牆擋掉
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "application/json"
+        }
+        
+        # 將 headers 帶入請求中
+        res = requests.get(url, headers=headers, timeout=10)
+        
+        # 確認伺服器有正常回應 (狀態碼 200)
+        if res.status_code == 200:
+            data = res.json()
+            if data.get('success'):
+                records = data['result']['records']
+                df = pd.DataFrame(records)
+                
+                df = df[['年月', '景氣對策信號綜合分數']].copy()
+                df.columns = ['Date', 'Score']
+                
+                df['Date'] = df['Date'].astype(str).apply(lambda x: f"{x[:4]}/{x[4:]}")
+                df['Score'] = pd.to_numeric(df['Score'], errors='coerce')
+                df = df.dropna()
+                
+                df = df.tail(24).reset_index(drop=True)
+                return df
+        else:
+            print(f"連線被拒絕，狀態碼: {res.status_code}")
             
-            # 整理國發會的欄位
-            df = df[['年月', '景氣對策信號綜合分數', '景氣對策信號檢查值']].copy()
-            df.columns = ['Date', 'Score', 'Light']
-            
-            # 轉換日期格式 (從 202401 變成 2024/01)
-            df['Date'] = df['Date'].astype(str).apply(lambda x: f"{x[:4]}/{x[4:]}")
-            df['Score'] = pd.to_numeric(df['Score'], errors='coerce')
-            df = df.dropna()
-            
-            # 取最近 24 個月的數據來畫圖
-            df = df.tail(24).reset_index(drop=True)
-            return df
     except Exception as e:
         print(f"Fetch Economic Light Error: {e}")
     return pd.DataFrame()
