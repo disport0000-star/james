@@ -1,6 +1,7 @@
 # ==========================================
-# 📈 台股精選 300 強財務監控 - V1.9 總經雙箭頭版 (防火牆破解版)
-# 新增：黃金價格走勢 + 國發會官方景氣燈號即時連線 (加入 Header 偽裝)
+# 📈 台股精選 300 強財務監控 - V1.9 實用連結版
+# 保留：台股專家匯入 + 黃金走勢
+# 修改：景氣燈號改為官方網站外部連結按鈕
 # ==========================================
 import streamlit as st
 import yfinance as yf
@@ -11,7 +12,6 @@ import concurrent.futures
 import io
 import altair as alt
 import os
-import requests
 
 # --- 1. 網頁基本設定 ---
 st.set_page_config(page_title="台股精選 300 強監控", layout="wide")
@@ -19,11 +19,11 @@ st.title("📈 台股市值前 300 強財務監控")
 
 FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMy0wNyAxNTowNToyNiIsInVzZXJfaWQiOiJqYW1lc2FjZTA4IiwiZW1haWwiOiJkaXNwb3J0YWNlQHlhaG9vLmNvbS50dyIsImlwIjoiMTExLjI1NS4xMTAuNDkifQ.FLkCVK6j0S6TfgAI-_hAhaa3i11pmwlntZZP2X1RiIs"
 
-st.write(f"系統狀態：V1.9 總經雙箭頭版 (目前時間: {datetime.now().strftime('%H:%M:%S')})")
+st.write(f"系統狀態：V1.9 實用連結版 (目前時間: {datetime.now().strftime('%H:%M:%S')})")
 
 LOCAL_CACHE_FILE = "taiwan_top300_cache_v1_9.csv"
 
-# --- 2. 總經數據抓取函數 (黃金 + 景氣燈號) ---
+# --- 2. 總經數據抓取函數 (僅保留黃金) ---
 @st.cache_data(ttl=3600)
 def get_gold_trend():
     try:
@@ -36,40 +36,6 @@ def get_gold_trend():
         return pd.DataFrame()
     except Exception:
         return pd.DataFrame()
-
-@st.cache_data(ttl=86400)  # 景氣燈號每月更新一次即可，快取設為 24 小時
-def get_taiwan_economic_light():
-    try:
-        url = "https://od.ndc.gov.tw/api/v1/rest/datastore/A53000000A-000009"
-        
-        # 【修正核心】加入瀏覽器偽裝 Header，避免被台灣政府防火牆擋掉
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "application/json"
-        }
-        
-        res = requests.get(url, headers=headers, timeout=10)
-        
-        if res.status_code == 200:
-            data = res.json()
-            if data.get('success'):
-                records = data['result']['records']
-                df = pd.DataFrame(records)
-                
-                df = df[['年月', '景氣對策信號綜合分數']].copy()
-                df.columns = ['Date', 'Score']
-                
-                df['Date'] = df['Date'].astype(str).apply(lambda x: f"{x[:4]}/{x[4:]}")
-                df['Score'] = pd.to_numeric(df['Score'], errors='coerce')
-                df = df.dropna()
-                
-                df = df.tail(24).reset_index(drop=True)
-                return df
-        else:
-            print(f"連線被拒絕，狀態碼: {res.status_code}")
-    except Exception as e:
-        print(f"Fetch Economic Light Error: {e}")
-    return pd.DataFrame()
 
 # --- 3. 台股核心抓取函數 (保留雲端備用) ---
 @st.cache_data(ttl=3600)
@@ -246,7 +212,7 @@ else:
     st.error("分析結果為空。請由左側邊欄上傳您在 VS Code 抓取好的 Excel 檔案！")
 
 # ==========================================
-# 🌟 全新模塊：總經雙指標 (黃金 + 景氣燈號)
+# 🌟 全新模塊：總經雙指標 (黃金 + 景氣燈號按鈕)
 # ==========================================
 st.divider()
 st.subheader("🌍 總經戰情室：景氣循環與資金流向")
@@ -268,28 +234,15 @@ with col1:
         st.warning("暫時無法取得黃金資料。")
 
 with col2:
-    st.markdown("#### 🚦 台灣景氣對策信號 (近 24 個月)")
-    df_light = get_taiwan_economic_light()
-    if not df_light.empty:
-        color_condition = alt.condition(
-            alt.datum.Score >= 38, alt.value('#FF4B4B'),      
-            alt.condition(alt.datum.Score >= 32, alt.value('#FF9F33'), 
-            alt.condition(alt.datum.Score >= 23, alt.value('#28A745'), 
-            alt.condition(alt.datum.Score >= 17, alt.value('#17A2B8'), 
-            alt.value('#007BFF'))))                           
-        )
-        
-        light_chart = alt.Chart(df_light).mark_bar(size=12).encode(
-            x=alt.X('Date:N', title='年月', sort=None),
-            y=alt.Y('Score:Q', title='綜合分數', scale=alt.Scale(domain=[0, 45])),
-            color=color_condition,
-            tooltip=['Date:N', 'Score:Q']
-        ).properties(height=350)
-        
-        line_green = alt.Chart(pd.DataFrame({'y': [23]})).mark_rule(color='#28A745', strokeDash=[5,5]).encode(y='y')
-        line_red = alt.Chart(pd.DataFrame({'y': [38]})).mark_rule(color='#FF4B4B', strokeDash=[5,5]).encode(y='y')
-        
-        st.altair_chart(light_chart + line_green + line_red, use_container_width=True)
-        st.caption("🚦 資料來源：國家發展委員會 Open Data API")
-    else:
-        st.warning("暫時無法取得國發會景氣燈號資料。")
+    st.markdown("#### 🚦 台灣景氣對策信號")
+    st.info("💡 掌握總經趨勢是判斷大盤水位的關鍵。為確保獲取最即時且正確的官方數據，請直接前往國家發展委員會網站查詢。")
+    st.markdown("**(紅燈：景氣熱絡 / 綠燈：景氣穩定 / 藍燈：景氣低迷)**")
+    
+    st.write("") # 增加一點排版空間
+    
+    # 使用 Streamlit 內建的超連結按鈕功能
+    st.link_button(
+        label="👉 點擊前往【國發會】查看最新景氣燈號",
+        url="https://www.ndc.gov.tw/Content_List.aspx?n=275A4EA8B860FEBB",
+        use_container_width=True
+    )
