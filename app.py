@@ -1,6 +1,6 @@
 # ==========================================
-# 📈 台股精選 300 強財務監控 - V1.9 總經雙箭頭版
-# 新增：黃金價格走勢 + 國發會官方景氣燈號即時連線
+# 📈 台股精選 300 強財務監控 - V1.9 總經雙箭頭版 (防火牆破解版)
+# 新增：黃金價格走勢 + 國發會官方景氣燈號即時連線 (加入 Header 偽裝)
 # ==========================================
 import streamlit as st
 import yfinance as yf
@@ -37,10 +37,7 @@ def get_gold_trend():
     except Exception:
         return pd.DataFrame()
 
-# --- 2. 總經數據抓取函數 (黃金 + 景氣燈號) ---
-# (保留原本的 get_gold_trend 函數不變...)
-
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400)  # 景氣燈號每月更新一次即可，快取設為 24 小時
 def get_taiwan_economic_light():
     try:
         url = "https://od.ndc.gov.tw/api/v1/rest/datastore/A53000000A-000009"
@@ -51,10 +48,8 @@ def get_taiwan_economic_light():
             "Accept": "application/json"
         }
         
-        # 將 headers 帶入請求中
         res = requests.get(url, headers=headers, timeout=10)
         
-        # 確認伺服器有正常回應 (狀態碼 200)
         if res.status_code == 200:
             data = res.json()
             if data.get('success'):
@@ -72,7 +67,6 @@ def get_taiwan_economic_light():
                 return df
         else:
             print(f"連線被拒絕，狀態碼: {res.status_code}")
-            
     except Exception as e:
         print(f"Fetch Economic Light Error: {e}")
     return pd.DataFrame()
@@ -257,7 +251,6 @@ else:
 st.divider()
 st.subheader("🌍 總經戰情室：景氣循環與資金流向")
 
-# 使用 Streamlit 內建的雙欄位排版，讓畫面具備專業 Dashboard 質感
 col1, col2 = st.columns(2)
 
 with col1:
@@ -278,23 +271,21 @@ with col2:
     st.markdown("#### 🚦 台灣景氣對策信號 (近 24 個月)")
     df_light = get_taiwan_economic_light()
     if not df_light.empty:
-        # 動態變色邏輯：精準對應國發會的 5 種燈號級距
         color_condition = alt.condition(
-            alt.datum.Score >= 38, alt.value('#FF4B4B'),      # 紅燈 (熱絡)
-            alt.condition(alt.datum.Score >= 32, alt.value('#FF9F33'), # 黃紅燈 (轉向)
-            alt.condition(alt.datum.Score >= 23, alt.value('#28A745'), # 綠燈 (穩定)
-            alt.condition(alt.datum.Score >= 17, alt.value('#17A2B8'), # 黃藍燈 (轉向)
-            alt.value('#007BFF'))))                           # 藍燈 (低迷)
+            alt.datum.Score >= 38, alt.value('#FF4B4B'),      
+            alt.condition(alt.datum.Score >= 32, alt.value('#FF9F33'), 
+            alt.condition(alt.datum.Score >= 23, alt.value('#28A745'), 
+            alt.condition(alt.datum.Score >= 17, alt.value('#17A2B8'), 
+            alt.value('#007BFF'))))                           
         )
         
         light_chart = alt.Chart(df_light).mark_bar(size=12).encode(
             x=alt.X('Date:N', title='年月', sort=None),
             y=alt.Y('Score:Q', title='綜合分數', scale=alt.Scale(domain=[0, 45])),
             color=color_condition,
-            tooltip=['Date:N', 'Score:Q', 'Light:N']
+            tooltip=['Date:N', 'Score:Q']
         ).properties(height=350)
         
-        # 加上關鍵水位參考線
         line_green = alt.Chart(pd.DataFrame({'y': [23]})).mark_rule(color='#28A745', strokeDash=[5,5]).encode(y='y')
         line_red = alt.Chart(pd.DataFrame({'y': [38]})).mark_rule(color='#FF4B4B', strokeDash=[5,5]).encode(y='y')
         
