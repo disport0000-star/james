@@ -1,7 +1,7 @@
 # ==========================================
-# 📈 台股精選 300 強財務監控 - V1.9 實用連結版
-# 保留：台股專家匯入 + 黃金走勢
-# 修改：景氣燈號改為官方網站外部連結按鈕
+# 📈 台股精選 300 強財務監控 - V1.95 終極穩定版
+# 更新重點：黃金數據源切換至美國聯準會 (FRED)，確保雲端不封鎖
+# 保留：台股專家匯入模式 + 景氣燈號官方導航按鈕
 # ==========================================
 import streamlit as st
 import yfinance as yf
@@ -19,27 +19,35 @@ st.title("📈 台股市值前 300 強財務監控")
 
 FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMy0wNyAxNTowNToyNiIsInVzZXJfaWQiOiJqYW1lc2FjZTA4IiwiZW1haWwiOiJkaXNwb3J0YWNlQHlhaG9vLmNvbS50dyIsImlwIjoiMTExLjI1NS4xMTAuNDkifQ.FLkCVK6j0S6TfgAI-_hAhaa3i11pmwlntZZP2X1RiIs"
 
-st.write(f"系統狀態：V1.9 實用連結版 (目前時間: {datetime.now().strftime('%H:%M:%S')})")
+st.write(f"系統狀態：V1.95 終極穩定版 (目前時間: {datetime.now().strftime('%H:%M:%S')})")
 
-LOCAL_CACHE_FILE = "taiwan_top300_cache_v1_9.csv"
+LOCAL_CACHE_FILE = "taiwan_top300_cache_v1_95.csv"
 
-# --- 2. 總經數據抓取函數 (僅保留黃金) ---
-@st.cache_data(ttl=3600)
+# --- 2. 總經數據抓取函數 (切換至 FRED 來源) ---
+@st.cache_data(ttl=86400) # 官方每日更新一次，快取設為 24 小時
 def get_gold_trend():
     try:
-        gold = yf.Ticker("GC=F")
-        df_gold = gold.history(period="1y")
-        if not df_gold.empty:
-            df_gold = df_gold.reset_index()
-            df_gold['Date'] = pd.to_datetime(df_gold['Date']).dt.date
-            return df_gold[['Date', 'Close']]
-        return pd.DataFrame()
-    except Exception:
+        # 使用美國聯準會 (FRED) 官方開放資料 (倫敦黃金市場定盤價 USD/oz)
+        # 此來源為政府官方 CSV，極度穩定且不會阻擋雲端 IP
+        url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=GOLDAMGBD228NLBM"
+        
+        # 讀取 CSV，並處理可能的缺失值 (假日)
+        df_gold = pd.read_csv(url, na_values='.')
+        df_gold = df_gold.dropna()
+        
+        # 整理欄位格式
+        df_gold['DATE'] = pd.to_datetime(df_gold['DATE']).dt.date
+        df_gold = df_gold.rename(columns={'DATE': 'Date', 'GOLDAMGBD228NLBM': 'Close'})
+        
+        # 返回近一年 (約 252 個交易日) 的資料
+        return df_gold.tail(252).reset_index(drop=True)
+    except Exception as e:
+        print(f"FRED Gold Fetch Error: {e}")
         return pd.DataFrame()
 
 # --- 3. 台股核心抓取函數 (保留雲端備用) ---
 @st.cache_data(ttl=3600)
-def get_all_stock_data_v9(base_list):
+def get_all_stock_data_v10(base_list):
     final_results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         futures = [executor.submit(fetch_single_stock, s[0], s[1]) for s in base_list]
@@ -162,14 +170,14 @@ def process_data(force_update=False):
         base_list = get_base_stock_list()
         if not base_list: return pd.DataFrame()
         with st.status("🔍 正在透過雲端抓取備胎數據...", expanded=True) as status:
-            new_df = get_all_stock_data_v9(base_list)
+            new_df = get_all_stock_data_v10(base_list)
             if not new_df.empty:
                 new_df = new_df.drop_duplicates(subset=['股票代號']).sort_values(by='現金殖利率(%)', ascending=False).head(300)
                 new_df.to_csv(LOCAL_CACHE_FILE, index=False, encoding='utf-8-sig')
                 status.update(label=f"✅ 抓取完成！", state="complete")
                 return new_df
             else:
-                status.update(label="❌ 抓取失敗：請使用側邊欄上傳 VS Code 產出的 Excel。", state="error")
+                status.update(label="❌ 抓取失敗：請由側邊欄匯入 VS Code Excel。", state="error")
                 return pd.DataFrame()
     return pd.DataFrame()
 
@@ -212,7 +220,7 @@ else:
     st.error("分析結果為空。請由左側邊欄上傳您在 VS Code 抓取好的 Excel 檔案！")
 
 # ==========================================
-# 🌟 全新模塊：總經雙指標 (黃金 + 景氣燈號按鈕)
+# 🌟 全新模塊：總經雙指標 (FRED 黃金 + 景氣燈號連結)
 # ==========================================
 st.divider()
 st.subheader("🌍 總經戰情室：景氣循環與資金流向")
@@ -220,29 +228,29 @@ st.subheader("🌍 總經戰情室：景氣循環與資金流向")
 col1, col2 = st.columns(2)
 
 with col1:
-    st.markdown("#### 🟡 近一年黃金價格走勢 (USD/oz)")
+    st.markdown("#### 🟡 近一年黃金定盤價走勢 (FRED)")
     df_gold = get_gold_trend()
     if not df_gold.empty:
+        # 使用金黃色 (#FFD700) 畫出穩定的走勢圖
         gold_chart = alt.Chart(df_gold).mark_line(color='#FFD700', strokeWidth=3).encode(
             x=alt.X('Date:T', title='日期'),
-            y=alt.Y('Close:Q', title='收盤價 (USD)', scale=alt.Scale(zero=False)),
-            tooltip=[alt.Tooltip('Date:T', title='日期'), alt.Tooltip('Close:Q', title='收盤價', format='.2f')]
+            y=alt.Y('Close:Q', title='USD/oz', scale=alt.Scale(zero=False)),
+            tooltip=[alt.Tooltip('Date:T', title='日期'), alt.Tooltip('Close:Q', title='價格', format='.2f')]
         ).properties(height=350).interactive(bind_y=False)
         st.altair_chart(gold_chart, use_container_width=True)
-        st.caption("📈 資料來源：Yahoo Finance (紐約期金 GC=F)")
+        st.caption("📈 資料來源：美國聯準會 (FRED - London Fixing Price)")
     else:
-        st.warning("暫時無法取得黃金資料。")
+        st.warning("暫時無法取得 FRED 黃金資料。")
 
 with col2:
     st.markdown("#### 🚦 台灣景氣對策信號")
-    st.info("💡 掌握總經趨勢是判斷大盤水位的關鍵。為確保獲取最即時且正確的官方數據，請直接前往國家發展委員會網站查詢。")
-    st.markdown("**(紅燈：景氣熱絡 / 綠燈：景氣穩定 / 藍燈：景氣低迷)**")
+    st.info("💡 為確保獲取最精準的官方燈號與景氣分數，請前往國發會網站。")
+    st.markdown("**(紅燈：熱絡 / 綠燈：穩定 / 藍燈：低迷)**")
     
-    st.write("") # 增加一點排版空間
-    
-    # 使用 Streamlit 內建的超連結按鈕功能
+    st.write("") 
     st.link_button(
         label="👉 點擊前往【國發會】查看最新景氣燈號",
         url="https://www.ndc.gov.tw/Content_List.aspx?n=275A4EA8B860FEBB",
         use_container_width=True
     )
+    st.caption("💡 官方數據通常於每月 27 號左右更新上個月數據。")
