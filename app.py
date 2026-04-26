@@ -1,172 +1,31 @@
 # ==========================================
-# 📈 台股精選 300 強財務監控 - V1.96 終極穩定版 (20260426)
-# 更新重點：黃金數據源 (FRED) 加入 User-Agent 偽裝，破解雲端防火牆阻擋
-# 功能：台股專家匯入模式 + FRED 黃金走勢 + 景氣燈號官方導航
+# 📈 台股精選 300 強財務監控 - V1.97 零死角全互動版
+# 更新重點：捨棄後端爬蟲，導入 TradingView 前端微服務，100% 免疫防火牆
 # ==========================================
 import streamlit as st
-import yfinance as yf
 import pandas as pd
-from FinMind.data import DataLoader
-from datetime import datetime, timedelta
-import concurrent.futures
+from datetime import datetime
+import streamlit.components.v1 as components
 import io
 import altair as alt
 import os
-import requests
 
 # --- 1. 網頁基本設定 ---
 st.set_page_config(page_title="台股精選 300 強監控", layout="wide")
 st.title("📈 台股市值前 300 強財務監控")
 
-# 您專屬的 FinMind API Token
-FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMy0wNyAxNTowNToyNiIsInVzZXJfaWQiOiJqYW1lc2FjZTA4IiwiZW1haWwiOiJkaXNwb3J0YWNlQHlhaG9vLmNvbS50dyIsImlwIjoiMTExLjI1NS4xMTAuNDkifQ.FLkCVK6j0S6TfgAI-_hAhaa3i11pmwlntZZP2X1RiIs"
+st.write(f"系統狀態：V1.97 零死角全互動版 (目前時間: {datetime.now().strftime('%H:%M:%S')})")
 
-st.write(f"系統狀態：V1.96 終極穩定版 (目前時間: {datetime.now().strftime('%H:%M:%S')})")
+LOCAL_CACHE_FILE = "taiwan_top300_cache_v1_97.csv"
 
-LOCAL_CACHE_FILE = "taiwan_top300_cache_v1_96.csv"
-
-# --- 2. 總經數據抓取函數 (FRED 面具武裝版) ---
-@st.cache_data(ttl=86400) # 官方每日更新一次，快取設為 24 小時
-def get_gold_trend():
-    import io
-    try:
-        url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=GOLDAMGBD228NLBM"
-        
-        # 【核心修正】加入瀏覽器偽裝面具，避免被 FRED/Cloudflare 防火牆阻擋
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "text/csv"
-        }
-        
-        # 使用 requests 帶著面具去下載資料
-        res = requests.get(url, headers=headers, timeout=10)
-        
-        if res.status_code == 200:
-            # 將抓下來的文字轉換回 pandas 讀取的 CSV 格式
-            df_gold = pd.read_csv(io.StringIO(res.text), na_values='.')
-            df_gold = df_gold.dropna()
-            
-            # 整理欄位格式
-            df_gold['DATE'] = pd.to_datetime(df_gold['DATE']).dt.date
-            df_gold = df_gold.rename(columns={'DATE': 'Date', 'GOLDAMGBD228NLBM': 'Close'})
-            
-            # 返回近一年 (約 252 個交易日) 的資料
-            return df_gold.tail(252).reset_index(drop=True)
-        else:
-            print(f"FRED 連線失敗，狀態碼: {res.status_code}")
-            return pd.DataFrame()
-            
-    except Exception as e:
-        print(f"FRED Gold Fetch Error: {e}")
-        return pd.DataFrame()
-
-# --- 3. 台股核心抓取函數 (保留雲端備用邏輯) ---
-@st.cache_data(ttl=3600)
-def get_all_stock_data_v10(base_list):
-    final_results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-        futures = [executor.submit(fetch_single_stock, s[0], s[1]) for s in base_list]
-        for future in concurrent.futures.as_completed(futures):
-            res = future.result()
-            if res: final_results.append(res)
-    return pd.DataFrame(final_results)
-
-def fetch_single_stock(sid, sname):
-    import time, random
-    time.sleep(random.uniform(1.0, 2.5)) 
-    clean_id = str(sid)
-    full_sid = f"{clean_id}.TW"
-    dl = DataLoader()
-    dl.login_by_token(api_token=FINMIND_TOKEN)
-    
-    try:
-        stock = yf.Ticker(full_sid)
-        info = stock.info
-        curr_price = info.get('currentPrice') or info.get('regularMarketPrice', 0)
-        if curr_price == 0: return None
-
-        # 現金股利 (去年日曆年總和)
-        div_history = stock.dividends
-        if not div_history.empty:
-            target_year = datetime.now().year - 1
-            div_dates = div_history.index.tz_localize(None)
-            last_year_divs = div_history[div_dates.year == target_year]
-            cash_div = round(last_year_divs.sum(), 2)
-        else: cash_div = 0.0
-            
-        calc_yield = round((cash_div / curr_price * 100), 1) if cash_div > 0 else 0.0
-
-        # 股票股利 (FinMind)
-        stock_div = 0.0
-        try:
-            df_div = dl.taiwan_stock_dividend(
-                stock_id=clean_id, 
-                start_date=(datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
-            )
-            if df_div is not None and not df_div.empty:
-                df_div = df_div.sort_values('date', ascending=False)
-                if 'stock_dividend' in df_div.columns:
-                    stock_div = round(float(df_div.iloc[0]['stock_dividend']), 2)
-        except Exception: pass 
-
-        # EPS 數據
-        eps_q0 = round(info.get('trailingEps', 0), 2)
-
-        return {
-            '股票代號': clean_id, '公司名稱': sname, '目前股價': curr_price,
-            '現金殖利率(%)': calc_yield, '現金股利': cash_div, '股票股利': stock_div,
-            '最新季EPS': eps_q0, '更新日期': datetime.now().strftime('%Y-%m-%d')
-        }
-    except Exception: return None
-
-# --- 4. 輔助函數 ---
-@st.cache_data(ttl=86400)
-def get_base_stock_list():
-    try:
-        dl = DataLoader()
-        dl.login_by_token(api_token=FINMIND_TOKEN)
-        df_info = dl.taiwan_stock_info()
-        if df_info is None or df_info.empty: return []
-        df_info = df_info[df_info['type'] == 'twse']
-        is_four_digits = df_info['stock_id'].astype(str).str.len() == 4
-        is_numeric = df_info['stock_id'].astype(str).str.isnumeric()
-        df_info = df_info[is_four_digits & is_numeric].drop_duplicates(subset=['stock_id'])
-        return [[row['stock_id'], row['stock_name']] for _, row in df_info.head(500).iterrows()]
-    except Exception: return []
-
+# --- 2. 輔助函數：Excel 下載 ---
 def to_excel(df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Data')
     return output.getvalue()
 
-# --- 5. 主流程邏輯 ---
-def process_data(force_update=False):
-    cached_df = pd.DataFrame()
-    if os.path.exists(LOCAL_CACHE_FILE):
-        try:
-            cached_df = pd.read_csv(LOCAL_CACHE_FILE, dtype={'股票代號': str})
-            cached_df = cached_df.fillna("N/A")
-            if not cached_df.empty:
-                return cached_df
-        except Exception: pass
-
-    if force_update:
-        base_list = get_base_stock_list()
-        if not base_list: return pd.DataFrame()
-        with st.status("🔍 正在透過雲端抓取備胎數據...", expanded=True) as status:
-            new_df = get_all_stock_data_v10(base_list)
-            if not new_df.empty:
-                new_df = new_df.drop_duplicates(subset=['股票代號']).sort_values(by='現金殖利率(%)', ascending=False).head(300)
-                new_df.to_csv(LOCAL_CACHE_FILE, index=False, encoding='utf-8-sig')
-                status.update(label=f"✅ 抓取完成！", state="complete")
-                return new_df
-            else:
-                status.update(label="❌ 抓取失敗：請由側邊欄匯入 VS Code Excel。", state="error")
-                return pd.DataFrame()
-    return pd.DataFrame()
-
-# --- 6. 側邊欄：匯入功能 ---
+# --- 3. 側邊欄：專家匯入介面 ---
 with st.sidebar:
     st.markdown("### 🔌 專家模式：匯入本地資料")
     st.info("💡 將 VS Code 產出的全台股 Excel 拖曳到下方更新畫面！")
@@ -177,54 +36,84 @@ with st.sidebar:
             df_uploaded = pd.read_excel(uploaded_file, dtype={'股票代號': str})
             df_top300 = df_uploaded.sort_values(by='現金殖利率(%)', ascending=False).head(300)
             df_top300.to_csv(LOCAL_CACHE_FILE, index=False, encoding='utf-8-sig')
-            st.success("✅ 資料匯入成功！請點擊下方的重啟按鈕。")
+            st.success("✅ 資料匯入成功！請點擊下方的「重啟網頁」按鈕。")
         except Exception as e:
             st.error(f"檔案讀取失敗：{e}")
 
     st.divider()
-    force_update = st.button('🔄 強制雲端抓取台股 (容易失敗)')
     if st.button('🧹 清除快取並重啟網頁'):
         st.cache_data.clear()
         st.rerun()
 
-# --- 7. 主畫面呈現 ---
-full_df = process_data(force_update=force_update)
-
-if not full_df.empty:
+# --- 4. 主畫面呈現 (台股 300 強) ---
+if os.path.exists(LOCAL_CACHE_FILE):
+    full_df = pd.read_csv(LOCAL_CACHE_FILE, dtype={'股票代號': str})
+    full_df = full_df.fillna("N/A")
+    
     st.download_button(
         label=f"📥 下載前 {len(full_df)} 強財報 Excel",
         data=to_excel(full_df),
         file_name=f"Taiwan_Top300_{datetime.now().strftime('%Y%m%d')}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+    
     st.subheader("💰 台股現金殖利率前 40 名")
-    st.dataframe(full_df.head(40).reset_index(drop=True), use_container_width=True, hide_index=True)
+    display_df = full_df.head(40).reset_index(drop=True)
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
 else:
     st.error("分析結果為空。請由左側邊欄上傳您在 VS Code 抓取好的 Excel 檔案！")
 
-# --- 8. 總經區塊 (FRED 黃金 + 燈號連結) ---
+# ==========================================
+# 🌟 全新模塊：總經雙指標 (TradingView 黃金 + 國發會燈號連結)
+# ==========================================
 st.divider()
 st.subheader("🌍 總經戰情室：景氣循環與資金流向")
 
 col1, col2 = st.columns(2)
 
 with col1:
-    st.markdown("#### 🟡 近一年黃金定盤價走勢 (FRED)")
-    df_gold = get_gold_trend()
-    if not df_gold.empty:
-        gold_chart = alt.Chart(df_gold).mark_line(color='#FFD700', strokeWidth=3).encode(
-            x=alt.X('Date:T', title='日期'),
-            y=alt.Y('Close:Q', title='USD/oz', scale=alt.Scale(zero=False)),
-            tooltip=[alt.Tooltip('Date:T', title='日期'), alt.Tooltip('Close:Q', title='價格', format='.2f')]
-        ).properties(height=350).interactive(bind_y=False)
-        st.altair_chart(gold_chart, use_container_width=True)
-        st.caption("📈 資料來源：美國聯準會 (FRED - London Fixing Price)")
-    else:
-        st.warning("暫時無法取得 FRED 黃金資料。")
+    st.markdown("#### 🟡 近一年黃金期貨走勢 (紐約 COMEX)")
+    
+    # 【核心破解】使用 TradingView 前端微服務，直接由使用者的瀏覽器去抓資料
+    # 絕對不會被 Streamlit Cloud 的 IP 防火牆阻擋！
+    tv_widget_html = """
+    <div class="tradingview-widget-container" style="height: 350px; width: 100%;">
+      <div id="tradingview_gold" style="height: calc(100% - 32px); width: 100%;"></div>
+      <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+      <script type="text/javascript">
+      new TradingView.widget(
+      {
+      "autosize": true,
+      "symbol": "COMEX:GC1!",
+      "interval": "D",
+      "timezone": "Asia/Taipei",
+      "theme": "dark",
+      "style": "2",
+      "locale": "zh_TW",
+      "enable_publishing": false,
+      "backgroundColor": "rgba(0, 0, 0, 0)",
+      "hide_top_toolbar": true,
+      "hide_legend": true,
+      "save_image": false,
+      "container_id": "tradingview_gold",
+      "lineColor": "#FFD700",
+      "topColor": "rgba(255, 215, 0, 0.3)",
+      "bottomColor": "rgba(255, 215, 0, 0.0)"
+    }
+      );
+      </script>
+    </div>
+    """
+    
+    # 嵌入 HTML 小工具
+    components.html(tv_widget_html, height=360)
+    st.caption("📈 資料來源：TradingView 官方即時數據")
 
 with col2:
     st.markdown("#### 🚦 台灣景氣對策信號")
     st.info("💡 掌握官方即時燈號與景氣分數，請前往國發會網站。")
+    st.markdown("**(紅燈：熱絡 / 綠燈：穩定 / 藍燈：低迷)**")
+    
     st.write("") 
     st.link_button(
         label="👉 點擊前往【國發會】查看最新景氣燈號",
