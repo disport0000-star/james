@@ -1,7 +1,6 @@
 # ==========================================
-# 📈 台股精選 300 強財務監控 - V1.99 智慧月更版
-# 更新重點：加入「每月 15 號時間鎖」，自動判斷是否需要更新，避免頻繁抓取被封鎖。
-# 總經模塊：保留 TradingView 互動黃金圖表與國發會官方連結
+# 📈 台股精選 300 強財務監控 - V1.99 智慧月更版 (黃金現貨修復)
+# 更新重點：替換 TradingView 代碼為 OANDA:XAUUSD (黃金現貨)，解除嵌入限制
 # ==========================================
 import streamlit as st
 import yfinance as yf
@@ -49,7 +48,7 @@ def get_all_stock_data(base_list):
 
 def fetch_single_stock(sid, sname):
     import time, random
-    time.sleep(random.uniform(1.0, 2.5)) # 隨機休息，降低被 Yahoo 封鎖機率
+    time.sleep(random.uniform(1.0, 2.5)) 
     clean_id = str(sid)
     full_sid = f"{clean_id}.TW"
     dl = DataLoader()
@@ -61,7 +60,6 @@ def fetch_single_stock(sid, sname):
         curr_price = info.get('currentPrice') or info.get('regularMarketPrice', 0)
         if curr_price == 0: return None
 
-        # 嚴格抓取去年日曆年現金股利
         div_history = stock.dividends
         if not div_history.empty:
             target_year = datetime.now().year - 1
@@ -102,7 +100,7 @@ def get_base_stock_list():
         is_four_digits = df_info['stock_id'].astype(str).str.len() == 4
         is_numeric = df_info['stock_id'].astype(str).str.isnumeric()
         df_info = df_info[is_four_digits & is_numeric].drop_duplicates(subset=['stock_id'])
-        return [[row['stock_id'], row['stock_name']] for _, row in df_info.head(400).iterrows()] # 抓取前400檔以篩選出300強
+        return [[row['stock_id'], row['stock_name']] for _, row in df_info.head(400).iterrows()] 
     except Exception: return []
 
 def to_excel(df):
@@ -117,13 +115,11 @@ def process_data(force_update=False):
     cached_df = pd.DataFrame()
     target_date = get_target_update_date()
     
-    # 檢查本地是否有快取檔案
     if not force_update and os.path.exists(LOCAL_CACHE_FILE):
         try:
             cached_df = pd.read_csv(LOCAL_CACHE_FILE, dtype={'股票代號': str})
             cached_df = cached_df.fillna("N/A")
             
-            # 檢查快取檔案的更新日期
             if not cached_df.empty and '更新日期' in cached_df.columns:
                 last_update_str = str(cached_df['更新日期'].iloc[0])
                 last_update_date = datetime.strptime(last_update_str, '%Y-%m-%d').date()
@@ -138,12 +134,10 @@ def process_data(force_update=False):
         except Exception:
             need_update = True
     else:
-        # 如果檔案不見了 (雲端主機休眠重置)，強制更新
         if not force_update:
             need_update = True
             st.info("💡 系統偵測：雲端暫存已重置，啟動自動復原抓取作業...")
 
-    # 執行更新抓取
     if need_update:
         base_list = get_base_stock_list()
         if not base_list: return pd.DataFrame()
@@ -156,7 +150,6 @@ def process_data(force_update=False):
                 return new_df
             else:
                 status.update(label="❌ 抓取失敗：雲端 IP 暫時被封鎖，請使用左側『專家模式』匯入本地 Excel。", state="error")
-                # 如果抓取失敗，但舊的快取還在，就加減顯示舊的
                 return cached_df if not cached_df.empty else pd.DataFrame()
     else:
         return cached_df
@@ -200,7 +193,7 @@ else:
     st.error("分析結果為空。由於雲端主機休眠重置且自動抓取受阻，請由左側邊欄上傳您的 Excel 檔案進行保底復原！")
 
 # ==========================================
-# 🌟 全新模塊：總經雙指標 (TradingView 黃金 + 國發會燈號連結)
+# 🌟 全新模塊：總經雙指標 (TradingView 現貨黃金 + 國發會燈號連結)
 # ==========================================
 st.divider()
 st.subheader("🌍 總經戰情室：景氣循環與資金流向")
@@ -208,7 +201,8 @@ st.subheader("🌍 總經戰情室：景氣循環與資金流向")
 col1, col2 = st.columns(2)
 
 with col1:
-    st.markdown("#### 🟡 近一年黃金期貨走勢 (紐約 COMEX)")
+    st.markdown("#### 🟡 近一年黃金價格走勢 (現貨 XAU/USD)")
+    # 將期貨 COMEX:GC1! 替換為完全公開允許嵌入的外匯現貨 OANDA:XAUUSD
     tv_widget_html = """
     <div class="tradingview-widget-container" style="height: 350px; width: 100%;">
       <div id="tradingview_gold" style="height: calc(100% - 32px); width: 100%;"></div>
@@ -217,7 +211,7 @@ with col1:
       new TradingView.widget(
       {
       "autosize": true,
-      "symbol": "COMEX:GC1!",
+      "symbol": "OANDA:XAUUSD",
       "interval": "D",
       "timezone": "Asia/Taipei",
       "theme": "dark",
@@ -238,7 +232,7 @@ with col1:
     </div>
     """
     components.html(tv_widget_html, height=360)
-    st.caption("📈 資料來源：TradingView 官方即時數據")
+    st.caption("📈 資料來源：TradingView 官方即時現貨數據")
 
 with col2:
     st.markdown("#### 🚦 台灣景氣對策信號")
