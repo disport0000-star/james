@@ -1,7 +1,5 @@
 streamlit
 yfinance
-FinMind
 pandas
-numpy
-openpyxl
+plotly
 tqdm
