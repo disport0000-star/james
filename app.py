@@ -1,109 +1,125 @@
 import streamlit as st
+import yfinance as yf
 import pandas as pd
-import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
+import concurrent.futures
 
 # --- 1. 網頁基本設定 ---
-st.set_page_config(page_title="個人投資監控站 - 高相容版", layout="wide")
+st.set_page_config(page_title="高殖利率(>8%)與大盤監控", layout="wide")
+st.title("📈 台股大盤走勢與高殖利率(>8%)個股監控")
+st.write(f"系統狀態：即時數據連線中 (更新時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
 
-st.title("📈 我的專屬股票監控面板")
-st.write(f"系統狀態：本地資料模式 (頁面更新時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
+# --- 2. 大盤走勢圖區塊 ---
+def display_market_index():
+    st.subheader("🌐 台灣加權指數 (大盤走勢)")
+    try:
+        twii = yf.Ticker("^TWII")
+        # 抓取近 30 天日線資料
+        df_twii = twii.history(period="1mo")
+        if not df_twii.empty:
+            curr_price = df_twii['Close'].iloc[-1]
+            prev_price = df_twii['Close'].iloc[-2]
+            change = curr_price - prev_price
+            pct_change = (change / prev_price) * 100
+            
+            # 顯示當前指數與漲跌指標
+            st.metric(
+                label="台股加權指數 (^TWII)", 
+                value=f"{curr_price:,.2f}", 
+                delta=f"{change:+.2f} ({pct_change:+.2f}%)"
+            )
+            # 繪製近 30 日收盤價走勢折線圖
+            st.line_chart(df_twii[['Close']], use_container_width=True)
+        else:
+            st.warning("暫時無法取得大盤數據。")
+    except Exception as e:
+        st.error(f"取得大盤數據時發生錯誤: {e}")
 
-# --- 2. 側邊欄：檔案上傳區 ---
-st.sidebar.header("📁 數據中心：匯入本地資料")
-st.sidebar.info("💡 請將最新產出的「全台股多因子財報 Excel」拖曳到下方！")
+# 執行顯示大盤
+display_market_index()
+st.divider()
 
-uploaded_file = st.sidebar.file_uploader("上傳全能型 Excel", type=["xlsx", "xls"])
+# --- 3. 個股數據抓取 logic (僅留股價、殖利率、除權息日) ---
+def fetch_stock_summary(sid, sname):
+    clean_id = str(sid)
+    full_sid = f"{clean_id}.TW"
+    try:
+        stock = yf.Ticker(full_sid)
+        info = stock.info
+        curr_price = info.get('currentPrice', 0)
+        if not curr_price or curr_price == 0:
+            return None
 
-if st.sidebar.button("🧹 清除記憶並重啟網頁"):
+        # 計算近 365 天殖利率與找出最新除權息日
+        div_history = stock.dividends
+        calc_yield = 0.0
+        latest_div_date = "無紀錄"
+        
+        if not div_history.empty:
+            div_history.index = div_history.index.tz_localize(None)
+            cutoff_date = datetime.now() - timedelta(days=365)
+            last_year_divs = div_history[div_history.index >= cutoff_date]
+            annual_div_sum = last_year_divs.sum()
+            calc_yield = round((annual_div_sum / curr_price * 100), 1) if annual_div_sum > 0 else 0.0
+            
+            # 最新一筆配息日期
+            latest_div_date = div_history.index[-1].strftime('%Y-%m-%d')
+
+        # 核心篩選：殖利率 > 8% 才回傳
+        if calc_yield > 8.0:
+            return {
+                '股票代號': clean_id,
+                '公司名稱': sname,
+                '目前股價': curr_price,
+                '現金殖利率(%)': calc_yield,
+                '最新除權息日': latest_div_date
+            }
+        else:
+            return None
+    except Exception:
+        return None
+
+# --- 4. 執行與畫面呈現 ---
+if st.button('🚀 開始掃描高殖利率(>8%)個股'):
+    with st.status("正在分析市場個股殖利率與除權息日程...", expanded=True) as status:
+        # 廣泛監控的指標與高股息標的名單
+        base_list = [
+            ["2330", "台積電"], ["2317", "鴻海"], ["2454", "聯發科"], ["2881", "富邦金"], 
+            ["2603", "長榮"], ["2002", "中鋼"], ["2886", "兆豐金"], ["2382", "廣達"],
+            ["2324", "仁寶"], ["2357", "華碩"], ["2882", "國泰金"], ["2891", "中信金"],
+            ["1101", "台泥"], ["2303", "聯電"], ["2308", "台達電"], ["2412", "中華電"],
+            ["2884", "玉山金"], ["3231", "緯創"], ["2376", "技嘉"], ["2609", "陽明"],
+            ["2615", "萬海"], ["3034", "聯詠"], ["3711", "日月光投控"], ["2408", "南亞科"]
+        ]
+        
+        final_results = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [executor.submit(fetch_stock_summary, s[0], s[1]) for s in base_list]
+            for future in concurrent.futures.as_completed(futures):
+                res = future.result()
+                if res:
+                    final_results.append(res)
+        
+        df = pd.DataFrame(final_results)
+        status.update(label="數據分析完成！", state="complete")
+
+    st.subheader("🎯 現金殖利率大於 8% 的精選個股")
+    if not df.empty:
+        # 依殖利率高到低排序
+        df = df.sort_values(by='現金殖利率(%)', ascending=False)
+        st.success(f"找到 {len(df)} 檔殖利率超過 8% 的個股！")
+        
+        # 顯示精簡表格
+        st.dataframe(df, use_container_width=True, hide_index=True)
+        
+        # 殖利率柱狀圖
+        st.divider()
+        st.subheader("📊 高殖利率 (>8%) 個股對比")
+        yield_chart = df.set_index('公司名稱')[['現金殖利率(%)']].sort_values(by='現金殖利率(%)', ascending=False)
+        st.bar_chart(yield_chart, color="#FF4B4B")
+    else:
+        st.warning("目前掃描的名單中，暫無現金殖利率 > 8% 的股票。")
+
+if st.button('🧹 清除快取重整網頁'):
     st.cache_data.clear()
     st.rerun()
-
-# --- 3. 欄位安全檢查與別名對應函數 ---
-def safe_get_column(df, possible_names):
-    """
-    從可能的名稱清單中找出存在於 df 中的欄位名稱
-    """
-    for name in possible_names:
-        if name in df.columns:
-            return name
-    return None
-
-# --- 4. 主顯示邏輯 ---
-if uploaded_file is not None:
-    try:
-        # 讀取 Excel 檔案
-        df = pd.read_excel(uploaded_file)
-        
-        # 清除欄位名稱前後的不必要空白
-        df.columns = [str(col).strip() for col in df.columns]
-
-        st.success(f"🎉 成功匯入數據！共 {len(df)} 筆個股資料。")
-
-        # -------------------------------------------------------------
-        # 欄位對應矩陣 (避免名稱不同導致 KeyError)
-        # -------------------------------------------------------------
-        col_code = safe_get_column(df, ['股票代號', '代號', 'Ticker', 'stock_id'])
-        col_name = safe_get_column(df, ['公司名稱', '名稱', 'Name', 'stock_name'])
-        col_price = safe_get_column(df, ['目前股價', '收盤價', '股價', 'Price'])
-        col_yield = safe_get_column(df, ['現金殖利率(%)', '殖利率(%)', '殖利率', 'Yield(%)'])
-        col_div_cash = safe_get_column(df, ['現金股利', '最新配息金額', '現金股利(元)'])
-        col_div_stock = safe_get_column(df, ['股票股利', '股票股利(元)'])
-        col_eps = safe_get_column(df, ['最新季EPS', 'EPS', 'EPS(元)'])
-        
-        col_m_growth = safe_get_column(df, ['與上月比較增減(%)', '營收變動率(%)', '月營收變動率(%)'])
-        col_q_growth = safe_get_column(df, ['與上季比較增減(%)', '季營收變動率(%)', '季營收成長率(%)'])
-        
-        col_gross = safe_get_column(df, ['毛利率(%)', '毛利率', 'Gross Margin(%)'])
-        col_op = safe_get_column(df, ['營業利益率(%)', '營業利益率', 'Operating Margin(%)'])
-        col_net = safe_get_column(df, ['稅後淨利率(%)', '淨利率(%)', 'Net Margin(%)'])
-        col_date = safe_get_column(df, ['更新日期', '日期', 'Date'])
-
-        # -------------------------------------------------------------
-        # 表格顯示 (使用安全的點擊排序)
-        # -------------------------------------------------------------
-        st.info("💡 提示：點擊欄位名稱可直接進行排序，表格支援向右滾動查看完整指標。")
-        
-        # 如果存在殖利率欄位，預設由高到低排序
-        if col_yield and col_yield in df.columns:
-            df_display = df.sort_values(by=col_yield, ascending=False)
-        else:
-            df_display = df
-
-        st.dataframe(df_display, use_container_width=True, hide_index=True)
-
-        # -------------------------------------------------------------
-        # 圖表展示 (加入全方位的 KeyError 防護)
-        # -------------------------------------------------------------
-        st.divider()
-        
-        # 1. 獲利三率長條圖 (若欄位存在才畫)
-        margin_cols = [c for c in [col_gross, col_op, col_net] if c is not None and c in df.columns]
-        
-        if col_name and margin_cols:
-            st.subheader("📊 關鍵獲利能力 (三率) 長條圖對比")
-            # 排除純文字或空值的公司名稱
-            chart_df = df_display.dropna(subset=[col_name]).set_index(col_name)[margin_cols]
-            
-            # 將數值轉換為 float 避免繪圖錯誤
-            for m_col in margin_cols:
-                chart_df[m_col] = pd.to_numeric(chart_df[m_col], errors='coerce').fillna(0)
-            
-            # 依據第一個三率指標排序
-            chart_df = chart_df.sort_values(by=margin_cols[0], ascending=False).head(20)
-            st.bar_chart(chart_df)
-        
-        # 2. 現金殖利率長條圖 (若欄位存在才畫)
-        if col_name and col_yield and col_yield in df.columns:
-            st.subheader("💰 現金殖利率 (%) 概覽 (前 20 強)")
-            yield_df = df_display.dropna(subset=[col_name, col_yield]).set_index(col_name)[[col_yield]]
-            yield_df[col_yield] = pd.to_numeric(yield_df[col_yield], errors='coerce').fillna(0)
-            yield_df = yield_df.sort_values(by=col_yield, ascending=False).head(20)
-            st.bar_chart(yield_df, color="#FF4B4B")
-
-    except Exception as e:
-        st.error(f"⚠️ 解析 Excel 檔案時發生錯誤：{str(e)}")
-        st.warning("請確認上傳的 Excel 檔案格式與欄位內容是否符合規範。")
-
-else:
-    st.info("👈 請點擊左側邊欄上傳 Excel 檔案以開始分析。")
