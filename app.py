@@ -2,26 +2,28 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import concurrent.futures
 
 # --- 1. 網頁基本設定 ---
-st.set_page_config(page_title="台股大盤、匯率、黃金與高殖利率ETF監控", layout="wide")
-st.title("📈 總體經濟 (大盤/匯率/黃金) 與高殖利率 ETF 監控面板")
+st.set_page_config(page_title="台股大盤(含KD/MACD)、匯率、黃金與高殖利率ETF監控", layout="wide")
+st.title("📈 總體經濟 (大盤/KD/MACD/匯率/黃金) 與高殖利率 ETF 監控面板")
 st.write(f"系統狀態：畫面狀態保存版 (最後更新時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
 
-# --- 2. 總體經濟指標 (大盤 K 線 + 匯率 & 黃金趨勢圖) ---
+# --- 2. 總體經濟指標 (大盤 K 線 + KD + MACD / 匯率 / 黃金趨勢圖) ---
 def display_macro_indicators():
     st.subheader("🌐 總體經濟關鍵指標走勢")
     
-    tab1, tab2, tab3 = st.tabs(["📊 加權指數 (日K線)", "💵 美元/台幣匯率 (USDTWD)", "🥇 黃金走勢 (新台幣/每兩)"])
+    tab1, tab2, tab3 = st.tabs(["📊 加權指數 (K線 + KD + MACD)", "💵 美元/台幣匯率 (USDTWD)", "🥇 黃金走勢 (新台幣/每兩)"])
     
-    # --- Tab 1: 大盤 K 線圖 ---
+    # --- Tab 1: 大盤 K 線圖 + KD + MACD (含滑鼠懸停數值與十字光標) ---
     with tab1:
         try:
             twii = yf.Ticker("^TWII")
             df_twii = twii.history(period="6mo")
-            if not df_twii.empty and len(df_twii) > 1:
+            
+            if not df_twii.empty and len(df_twii) > 35:
                 curr_price = df_twii['Close'].iloc[-1]
                 prev_price = df_twii['Close'].iloc[-2]
                 change = curr_price - prev_price
@@ -33,28 +35,108 @@ def display_macro_indicators():
                     delta=f"{change:+.2f} ({pct_change:+.2f}%)"
                 )
                 
-                fig_twii = go.Figure(data=[go.Candlestick(
+                # --- 計算 KD 指標 (9日) ---
+                low_min = df_twii['Low'].rolling(window=9).min()
+                high_max = df_twii['High'].rolling(window=9).max()
+                rsv = (df_twii['Close'] - low_min) / (high_max - low_min) * 100
+                rsv = rsv.fillna(50)
+                
+                k_list, d_list = [50.0], [50.0]
+                for r in rsv.iloc[1:]:
+                    k_val = (2/3) * k_list[-1] + (1/3) * r
+                    d_val = (2/3) * d_list[-1] + (1/3) * k_val
+                    k_list.append(k_val)
+                    d_list.append(d_val)
+                
+                df_twii['K'] = k_list
+                df_twii['D'] = d_list
+
+                # --- 計算 MACD 指標 (12, 26, 9) ---
+                ema12 = df_twii['Close'].ewm(span=12, adjust=False).mean()
+                ema26 = df_twii['Close'].ewm(span=26, adjust=False).mean()
+                df_twii['DIF'] = ema12 - ema26
+                df_twii['MACD'] = df_twii['DIF'].ewm(span=9, adjust=False).mean()
+                df_twii['MACD_Hist'] = df_twii['DIF'] - df_twii['MACD']
+
+                # --- 建立 3 列子圖 ---
+                fig = make_subplots(
+                    rows=3, cols=1,
+                    shared_xaxes=True,
+                    vertical_spacing=0.03,
+                    row_heights=[0.6, 0.2, 0.2]
+                )
+
+                # Row 1: 主 K 線圖 (加上懸停提示格式)
+                fig.add_trace(go.Candlestick(
                     x=df_twii.index,
                     open=df_twii['Open'],
                     high=df_twii['High'],
                     low=df_twii['Low'],
                     close=df_twii['Close'],
-                    increasing_line_color='#FF4136', # 上漲為紅
-                    decreasing_line_color='#2ECC40', # 下跌為綠
-                    name="加權指數"
-                )])
-                fig_twii.update_layout(
+                    increasing_line_color='#FF4136',
+                    decreasing_line_color='#2ECC40',
+                    name="加權指數",
+                    hoverinfo="x+y"
+                ), row=1, col=1)
+
+                # Row 2: KD 指標
+                fig.add_trace(go.Scatter(
+                    x=df_twii.index, y=df_twii['K'], mode='lines', 
+                    line=dict(color='#FFDC00', width=1.5), name='K (9)',
+                    hovertemplate="K值: %{y:.2f}<extra></extra>"
+                ), row=2, col=1)
+                
+                fig.add_trace(go.Scatter(
+                    x=df_twii.index, y=df_twii['D'], mode='lines', 
+                    line=dict(color='#0074D9', width=1.5), name='D (9)',
+                    hovertemplate="D值: %{y:.2f}<extra></extra>"
+                ), row=2, col=1)
+                
+                fig.add_hline(y=80, line_dash="dash", line_color="gray", opacity=0.5, row=2, col=1)
+                fig.add_hline(y=20, line_dash="dash", line_color="gray", opacity=0.5, row=2, col=1)
+
+                # Row 3: MACD 指標
+                hist_colors = ['#FF4136' if val >= 0 else '#2ECC40' for val in df_twii['MACD_Hist']]
+                fig.add_trace(go.Bar(
+                    x=df_twii.index, y=df_twii['MACD_Hist'], 
+                    marker_color=hist_colors, name='柱狀體',
+                    hovertemplate="柱狀體: %{y:.2f}<extra></extra>"
+                ), row=3, col=1)
+                
+                fig.add_trace(go.Scatter(
+                    x=df_twii.index, y=df_twii['DIF'], mode='lines', 
+                    line=dict(color='#FF851B', width=1.5), name='DIF (12,26)',
+                    hovertemplate="DIF: %{y:.2f}<extra></extra>"
+                ), row=3, col=1)
+                
+                fig.add_trace(go.Scatter(
+                    x=df_twii.index, y=df_twii['MACD'], mode='lines', 
+                    line=dict(color='#7FDBFF', width=1.5), name='MACD (9)',
+                    hovertemplate="MACD: %{y:.2f}<extra></extra>"
+                ), row=3, col=1)
+
+                # 版面設定與懸停十字線模式 (hovermode="x unified")
+                fig.update_layout(
                     xaxis_rangeslider_visible=False,
-                    yaxis=dict(autorange=True, fixedrange=False),
-                    margin=dict(l=20, r=20, t=20, b=20),
                     template="plotly_dark",
-                    height=400
+                    height=750,
+                    margin=dict(l=20, r=20, t=20, b=20),
+                    showlegend=True,
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    hovermode="x unified" # 關鍵設定：游移時橫向對齊顯示全套指標數值
                 )
-                st.plotly_chart(fig_twii, use_container_width=True)
+                
+                # 啟用垂直與橫向對齊線 (Crosshair)
+                fig.update_xaxes(showspikes=True, spikemode='across', spikesnap='cursor', spikedash='solid', spikecolor='gray', spikethickness=1)
+                fig.update_yaxes(autorange=True, fixedrange=False, row=1, col=1)
+                fig.update_yaxes(range=[0, 100], row=2, col=1, title="KD")
+                fig.update_yaxes(autorange=True, fixedrange=False, row=3, col=1, title="MACD")
+
+                st.plotly_chart(fig, use_container_width=True)
             else:
-                st.warning("暫時無法取得大盤數據。")
+                st.warning("暫時無法取得足夠之大盤數據。")
         except Exception as e:
-            st.warning(f"讀取大盤數據失敗: {e}")
+            st.warning(f"讀取大盤與技術指標數據失敗: {e}")
 
     # 安全抓取匯率歷史資料
     df_fx = pd.DataFrame()
@@ -84,14 +166,16 @@ def display_macro_indicators():
                     y=df_fx['Close'], 
                     mode='lines',
                     line=dict(color='#17BECF', width=2),
-                    name='USD/TWD'
+                    name='USD/TWD',
+                    hovertemplate="日期: %{x}<br>匯率: %{y:.3f}<extra></extra>"
                 )])
                 fig_fx.update_layout(
                     xaxis_rangeslider_visible=False,
                     yaxis=dict(autorange=True, fixedrange=False, title="匯率 (TWD)"),
                     margin=dict(l=20, r=20, t=20, b=20),
                     template="plotly_dark",
-                    height=400
+                    height=400,
+                    hovermode="x"
                 )
                 st.plotly_chart(fig_fx, use_container_width=True)
             except Exception as e:
@@ -106,16 +190,13 @@ def display_macro_indicators():
             df_gold = gold_ticker.history(period="6mo")
             
             if not df_gold.empty and not df_fx.empty:
-                # 1. 移除時區限制，避免對齊失敗
                 df_g = df_gold[['Close']].copy()
                 df_f = df_fx[['Close']].copy()
                 df_g.index = df_g.index.tz_localize(None)
                 df_f.index = df_f.index.tz_localize(None)
                 
-                # 2. 合併資料並用前後值填補缺漏 (避免休市日不同導致 0 筆資料)
                 df_gold_twd = pd.concat([df_g, df_f], axis=1, keys=['gold', 'fx']).ffill().bfill().dropna()
                 
-                # 3. 換算公式： (美元/金衡盎司) * 匯率 (NT/USD) / 0.8294 (盎司/兩) = NT/每兩
                 if not df_gold_twd.empty and len(df_gold_twd) > 1:
                     df_gold_twd['TWD_per_liang'] = (df_gold_twd[('gold', 'Close')] * df_gold_twd[('fx', 'Close')]) / 0.8294
                     
@@ -135,14 +216,16 @@ def display_macro_indicators():
                         y=df_gold_twd['TWD_per_liang'], 
                         mode='lines',
                         line=dict(color='#FFD700', width=2),
-                        name='台幣黃金(每兩)'
+                        name='台幣黃金(每兩)',
+                        hovertemplate="日期: %{x}<br>每兩價格: NT$ %{y:,.0f}<extra></extra>"
                     )])
                     fig_gold.update_layout(
                         xaxis_rangeslider_visible=False,
                         yaxis=dict(autorange=True, fixedrange=False, title="新台幣 (NT$)"),
                         margin=dict(l=20, r=20, t=20, b=20),
                         template="plotly_dark",
-                        height=400
+                        height=400,
+                        hovermode="x"
                     )
                     st.plotly_chart(fig_gold, use_container_width=True)
                 else:
@@ -156,7 +239,7 @@ def display_macro_indicators():
 display_macro_indicators()
 st.divider()
 
-# --- 3. ETF 數據抓取 logic (包含殖利率與 YTD 今年漲幅) ---
+# --- 3. ETF 數據抓取 logic ---
 def fetch_etf_summary(sid, sname):
     clean_id = str(sid)
     full_sid = f"{clean_id}.TW"
@@ -201,7 +284,7 @@ def fetch_etf_summary(sid, sname):
     except Exception:
         return None
 
-# --- 4. Session State 狀態控制 (畫面保持上一頁數據) ---
+# --- 4. Session State 狀態控制 ---
 if 'etf_df' not in st.session_state:
     st.session_state.etf_df = None
 
