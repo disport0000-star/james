@@ -8,7 +8,7 @@ import concurrent.futures
 # --- 1. 網頁基本設定 ---
 st.set_page_config(page_title="台股大盤K線與高殖利率ETF排行", layout="wide")
 st.title("📈 台股大盤走勢與 ETF 殖利率前 20 名監控")
-st.write(f"系統狀態：即時數據連線中 (更新時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
+st.write(f"系統狀態：畫面狀態保存版 (最後更新時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
 
 # --- 2. 大盤 K 線圖區塊 (Plotly：動態 Y 軸 + 紅漲綠跌) ---
 def display_market_index_kline():
@@ -57,7 +57,7 @@ def display_market_index_kline():
 display_market_index_kline()
 st.divider()
 
-# --- 3. ETF 數據抓取 logic ---
+# --- 3. ETF 數據抓取 logic (包含今年以來漲幅 YTD) ---
 def fetch_etf_summary(sid, sname):
     clean_id = str(sid)
     full_sid = f"{clean_id}.TW"
@@ -68,7 +68,7 @@ def fetch_etf_summary(sid, sname):
         if not curr_price or curr_price == 0:
             return None
 
-        # 計算近 365 天配息金額與殖利率
+        # A. 計算近 365 天配息金額與殖利率
         div_history = stock.dividends
         calc_yield = 0.0
         annual_div_sum = 0.0
@@ -80,14 +80,21 @@ def fetch_etf_summary(sid, sname):
             last_year_divs = div_history[div_history.index >= cutoff_date]
             annual_div_sum = last_year_divs.sum()
             calc_yield = round((annual_div_sum / curr_price * 100), 2) if annual_div_sum > 0 else 0.0
-            
-            # 最新一筆配息日期
             latest_div_date = div_history.index[-1].strftime('%Y-%m-%d')
+
+        # B. 計算今年以來漲幅 (YTD)
+        hist_ytd = stock.history(period="ytd")
+        ytd_change_pct = 0.0
+        if not hist_ytd.empty and len(hist_ytd) > 1:
+            start_price = hist_ytd['Close'].iloc[0] # 今年第一個交易日收盤價
+            latest_price = hist_ytd['Close'].iloc[-1]
+            ytd_change_pct = round(((latest_price - start_price) / start_price * 100), 2)
 
         return {
             'ETF代號': clean_id,
             'ETF名稱': sname,
             '目前股價': curr_price,
+            '今年以來漲幅(%)': ytd_change_pct,
             '近一年配息總額': round(annual_div_sum, 2),
             '現金殖利率(%)': calc_yield,
             '最新除息日': latest_div_date
@@ -95,10 +102,22 @@ def fetch_etf_summary(sid, sname):
     except Exception:
         return None
 
-# --- 4. 執行與畫面呈現 ---
-if st.button('🚀 開始分析 ETF 殖利率前 20 名'):
-    with st.status("正在抓取與計算熱門 ETF 殖利率排行...", expanded=True) as status:
-        # 台灣市場熱門與高股息 ETF 清單 (可自由增減)
+# --- 4. Session State 狀態控制 (停留上一次畫面) ---
+if 'etf_df' not in st.session_state:
+    st.session_state.etf_df = None
+
+col1, col2 = st.columns([1, 4])
+with col1:
+    btn_fetch = st.button('🚀 開始分析 / 更新數據')
+with col2:
+    if st.button('🧹 清除快取'):
+        st.session_state.etf_df = None
+        st.cache_data.clear()
+        st.rerun()
+
+# 點擊更新按鈕時才執行數據抓取
+if btn_fetch:
+    with st.status("正在抓取與計算最新 ETF 殖利率與今年漲幅...", expanded=True) as status:
         etf_list = [
             ["0050", "元大台灣50"], ["0056", "元大高股息"], ["00878", "國泰永續高股息"],
             ["00919", "群益台灣精選高息"], ["00929", "復華台灣科技優息"], ["00713", "元大台灣高息低波"],
@@ -119,25 +138,28 @@ if st.button('🚀 開始分析 ETF 殖利率前 20 名'):
                     final_results.append(res)
         
         df = pd.DataFrame(final_results)
-        status.update(label="ETF 數據分析完成！", state="complete")
+        if not df.empty:
+            # 排序並取前 20 名存入 session_state
+            st.session_state.etf_df = df.sort_values(by='現金殖利率(%)', ascending=False).head(20)
+        status.update(label="數據更新完成！", state="complete")
 
-    st.subheader("🎯 台股 ETF 現金殖利率前 20 名排行榜")
-    if not df.empty:
-        # 依殖利率由高至低排序，並取前 20 名
-        df_top20 = df.sort_values(by='現金殖利率(%)', ascending=False).head(20)
-        st.success(f"成功加載前 {len(df_top20)} 名高殖利率 ETF！")
-        
-        # 顯示表格
-        st.dataframe(df_top20, use_container_width=True, hide_index=True)
-        
-        # 長條圖視覺化 (依殖利率高至低)
-        st.divider()
-        st.subheader("📊 ETF 現金殖利率 (%) 排行圖表")
-        yield_chart = df_top20.set_index('ETF名稱')[['現金殖利率(%)']].sort_values(by='現金殖利率(%)', ascending=False)
-        st.bar_chart(yield_chart, color="#FF4B4B")
-    else:
-        st.warning("暫時無法獲取 ETF 數據，請稍後再試。")
-
-if st.button('🧹 清除快取重整網頁'):
-    st.cache_data.clear()
-    st.rerun()
+# --- 5. 渲染表格與圖表 ---
+st.subheader("🎯 台股 ETF 現金殖利率前 20 名排行榜")
+if st.session_state.etf_df is not None and not st.session_state.etf_df.empty:
+    df_top20 = st.session_state.etf_df
+    
+    st.dataframe(
+        df_top20, 
+        use_container_width=True, 
+        hide_index=True,
+        column_config={
+            "今年以來漲幅(%)": st.column_config.NumberColumn(format="%.2f%%")
+        }
+    )
+    
+    st.divider()
+    st.subheader("📊 ETF 現金殖利率 (%) 排行圖表")
+    yield_chart = df_top20.set_index('ETF名稱')[['現金殖利率(%)']].sort_values(by='現金殖利率(%)', ascending=False)
+    st.bar_chart(yield_chart, color="#FF4B4B")
+else:
+    st.info("💡 目前無暫存資料。請點擊上方「🚀 開始分析 / 更新數據」按鈕載入最新數據。")
