@@ -1,52 +1,74 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import concurrent.futures
 
 # --- 1. 網頁基本設定 ---
-st.set_page_config(page_title="高殖利率(>8%)與大盤監控", layout="wide")
+st.set_page_config(page_title="台股大盤K線與高殖利率(>8%)監控", layout="wide")
 st.title("📈 台股大盤走勢與高殖利率(>8%)個股監控")
 st.write(f"系統狀態：即時數據連線中 (更新時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
 
-# --- 2. 大盤走勢圖區塊 ---
-def display_market_index():
-    st.subheader("🌐 台灣加權指數 (大盤走勢)")
+# --- 2. 大盤 K 線圖區塊 (Plotly 實現：動態 Y 軸 + 紅漲綠跌) ---
+def display_market_index_kline():
+    st.subheader("🌐 台灣加權指數 (大盤日 K 線走勢)")
     try:
         twii = yf.Ticker("^TWII")
-        # 抓取近 30 天日線資料
-        df_twii = twii.history(period="1mo")
+        # 抓取近 6 個月的日 K 線數據
+        df_twii = twii.history(period="6mo")
         if not df_twii.empty:
             curr_price = df_twii['Close'].iloc[-1]
             prev_price = df_twii['Close'].iloc[-2]
             change = curr_price - prev_price
             pct_change = (change / prev_price) * 100
             
-            # 顯示當前指數與漲跌指標
+            # 顯示當前指數與漲跌幅
             st.metric(
                 label="台股加權指數 (^TWII)", 
                 value=f"{curr_price:,.2f}", 
                 delta=f"{change:+.2f} ({pct_change:+.2f}%)"
             )
-            # 繪製近 30 日收盤價走勢折線圖
-            st.line_chart(df_twii[['Close']], use_container_width=True)
+            
+            # 繪製專業 K 線圖 (Candlestick)
+            fig = go.Figure(data=[go.Candlestick(
+                x=df_twii.index,
+                open=df_twii['Open'],
+                high=df_twii['High'],
+                low=df_twii['Low'],
+                close=df_twii['Close'],
+                increasing_line_color='#FF4136', # 台股習慣：上漲為紅
+                decreasing_line_color='#2ECC40', # 台股習慣：下跌為綠
+                name="加權指數"
+            )])
+            
+            # 版面優化：使 Y 軸貼合實際數值範圍，隱藏底部 rangeslider 保持乾淨
+            fig.update_layout(
+                xaxis_rangeslider_visible=False,
+                yaxis=dict(autorange=True, fixedrange=False), # Y 軸自動跟著資料變動
+                margin=dict(l=20, r=20, t=20, b=20),
+                template="plotly_dark",
+                height=450
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
         else:
             st.warning("暫時無法取得大盤數據。")
     except Exception as e:
         st.error(f"取得大盤數據時發生錯誤: {e}")
 
-# 執行顯示大盤
-display_market_index()
+# 執行顯示大盤 K 線
+display_market_index_kline()
 st.divider()
 
-# --- 3. 個股數據抓取 logic (僅留股價、殖利率、除權息日) ---
+# --- 3. 個股數據抓取 logic (純 yfinance 高速穩定版) ---
 def fetch_stock_summary(sid, sname):
     clean_id = str(sid)
     full_sid = f"{clean_id}.TW"
     try:
         stock = yf.Ticker(full_sid)
         info = stock.info
-        curr_price = info.get('currentPrice', 0)
+        curr_price = info.get('currentPrice', 0) or info.get('regularMarketPrice', 0)
         if not curr_price or curr_price == 0:
             return None
 
@@ -82,7 +104,7 @@ def fetch_stock_summary(sid, sname):
 # --- 4. 執行與畫面呈現 ---
 if st.button('🚀 開始掃描高殖利率(>8%)個股'):
     with st.status("正在分析市場個股殖利率與除權息日程...", expanded=True) as status:
-        # 廣泛監控的指標與高股息標的名單
+        # 熱門權值與高股息標的名單
         base_list = [
             ["2330", "台積電"], ["2317", "鴻海"], ["2454", "聯發科"], ["2881", "富邦金"], 
             ["2603", "長榮"], ["2002", "中鋼"], ["2886", "兆豐金"], ["2382", "廣達"],
@@ -118,7 +140,7 @@ if st.button('🚀 開始掃描高殖利率(>8%)個股'):
         yield_chart = df.set_index('公司名稱')[['現金殖利率(%)']].sort_values(by='現金殖利率(%)', ascending=False)
         st.bar_chart(yield_chart, color="#FF4B4B")
     else:
-        st.warning("目前掃描的名單中，暫無現金殖利率 > 8% 的股票。")
+        st.info("目前掃描的名單中，暫無現金殖利率 > 8% 的股票。")
 
 if st.button('🧹 清除快取重整網頁'):
     st.cache_data.clear()
